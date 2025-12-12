@@ -20,7 +20,7 @@ Perfect for users who want full control over their environment with minimal over
 - Add a file.
 
 ```shell
-    dotrs --action add --file alacritty.toml
+dotrs --action add --file alacritty.toml
 ```
 
 ```shell
@@ -34,5 +34,5 @@ Perfect for users who want full control over their environment with minimal over
 - Apply dotfiles.
 
 ```shell
-    dotrs --action apply
+dotrs --action apply
 ```
