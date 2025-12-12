@@ -11,7 +11,7 @@ enum Action {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "dots", version)]
+#[command(name = "dotrs", version)]
 struct Args {
     #[arg(short, long)]
     action: Action,
