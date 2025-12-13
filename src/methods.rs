@@ -6,90 +6,72 @@ use std::{
     process::Command,
 };
 
+use color_print::cprintln;
+
 pub fn init() {
     let dots_dir = Path::new("/home/doom/dots");
-    let result = fs::create_dir(dots_dir);
-    match result {
-        Ok(_) => println!("dotfiles initialized"),
+
+    match fs::create_dir(dots_dir) {
+        Ok(_) => cprintln!("<green>✓</> dots directory created"),
         Err(e) => match e.kind() {
             ErrorKind::AlreadyExists => {
-                println!("dotfiles already initialized")
+                cprintln!("<yellow>•</> dots directory already exists")
             }
             ErrorKind::PermissionDenied => {
-                println!("Permission denied")
+                cprintln!("<red>✗</> permission denied");
+                return;
             }
             _ => {
-                println!("Error dir creation: {}", e)
+                cprintln!("<red>✗</> cannot create dots directory");
+                return;
             }
         },
     }
 
-    let output = Command::new("git")
+    match Command::new("git")
         .arg("init")
         .current_dir(dots_dir)
-        .output();
-    match output {
-        Ok(_) => println!("Git initialized"),
-        Err(e) => println!("Error git: {}", e),
+        .output()
+    {
+        Ok(_) => cprintln!("<green>✓</> git repository initialized"),
+        Err(_) => cprintln!("<red>✗</> git not available"),
     }
 }
 
 pub fn add(filename: Option<String>) {
     let dots_dir = Path::new("/home/doom/dots");
+    let filename = filename.expect("missing file");
 
-    let filename = filename.expect("empty file parameter");
-
-    let home_dir = dirs_next::home_dir().expect("Could not get HOME directory");
+    let home_dir = dirs_next::home_dir().expect("no HOME");
 
     let absolute_path = match fs::canonicalize(&filename) {
         Ok(p) => p,
-        Err(e) => {
-            eprintln!("Error: cannot resolve file '{}': {}", filename, e);
+        Err(_) => {
+            cprintln!("<red>✗</> file not found");
             return;
         }
     };
 
     if !absolute_path.starts_with(&home_dir) {
-        eprintln!(
-            "Error: the file must be inside HOME.\nFile: {}\nHOME: {}",
-            absolute_path.display(),
-            home_dir.display()
-        );
+        cprintln!("<red>✗</> file must be inside HOME");
         return;
     }
 
-    let relative_path = match absolute_path.strip_prefix(&home_dir) {
-        Ok(r) => r,
-        Err(_) => {
-            eprintln!("Could not strip HOME prefix. Something is wrong.");
-            return;
-        }
-    };
+    let relative = absolute_path.strip_prefix(&home_dir).unwrap();
+    let destination = dots_dir.join(relative);
 
-    let destination_path: PathBuf = dots_dir.join(relative_path);
-
-    if let Some(parent) = destination_path.parent() {
-        if let Err(e) = fs::create_dir_all(parent) {
-            eprintln!(
-                "Error creating directory structure {}: {}",
-                parent.display(),
-                e
-            );
+    if let Some(parent) = destination.parent() {
+        if fs::create_dir_all(parent).is_err() {
+            cprintln!("<red>✗</> cannot create directory structure");
             return;
         }
     }
 
-    match fs::copy(&absolute_path, &destination_path) {
+    match fs::copy(&absolute_path, &destination) {
         Ok(_) => {
-            println!(
-                "Copied:\n  FROM {}\n  TO   {}",
-                absolute_path.display(),
-                destination_path.display()
-            );
+            cprintln!("<green>✓</> added <dim>{}</>", relative.display());
         }
-        Err(e) => {
-            eprintln!("Error copying file: {}", e);
-        }
+        Err(_) => cprintln!("<red>✗</> copy failed"),
     }
 }
 
@@ -97,9 +79,9 @@ pub fn apply() {
     let dots_dir = Path::new("/home/doom/dots");
 
     let home_dir = match home_dir() {
-        Some(path) => path,
+        Some(p) => p,
         None => {
-            println!("There is no home?");
+            cprintln!("<red>✗</> HOME not found");
             return;
         }
     };
@@ -110,23 +92,13 @@ pub fn apply() {
         if let Ok(relative) = file.strip_prefix(dots_dir) {
             let destination = home_dir.join(relative);
 
-            if file.is_dir() {
-                if let Err(e) = fs::create_dir_all(&destination) {
-                    println!("Error creating directory {:?}: {}", destination, e);
-                }
-                continue;
-            }
-
             if let Some(parent) = destination.parent() {
-                if let Err(e) = fs::create_dir_all(parent) {
-                    println!("Error creating parent dirs {:?}: {}", parent, e);
-                    continue;
-                }
+                let _ = fs::create_dir_all(parent);
             }
 
             match fs::copy(&file, &destination) {
-                Ok(_) => println!("Copied: {:?} -> {:?}", file, destination),
-                Err(e) => println!("Error copying {:?}: {}", file, e),
+                Ok(_) => cprintln!("<green>→</> {}", relative.display()),
+                Err(_) => cprintln!("<red>✗</> {}", relative.display()),
             }
         }
     }
