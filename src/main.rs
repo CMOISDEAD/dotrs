@@ -1,4 +1,5 @@
 mod methods;
+mod utils;
 
 use clap::{Parser, ValueEnum};
 
@@ -8,6 +9,8 @@ enum Action {
     APPLY,
     ADD,
     REMOVE,
+    LIST,
+    STATUS,
 }
 
 #[derive(Parser, Debug)]
@@ -27,5 +30,7 @@ fn main() {
         Action::APPLY => methods::apply(),
         Action::ADD => methods::add(args.file),
         Action::REMOVE => println!("remove dotfiles"),
+        Action::LIST => methods::list(),
+        Action::STATUS => methods::status(),
     }
 }

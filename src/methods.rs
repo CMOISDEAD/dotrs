@@ -1,12 +1,8 @@
-use std::{
-    env::home_dir,
-    fs,
-    io::ErrorKind,
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::{env::home_dir, fs, io::ErrorKind, path::Path, process::Command};
 
 use color_print::cprintln;
+
+use crate::utils;
 
 pub fn init() {
     let dots_dir = Path::new("/home/doom/dots");
@@ -86,7 +82,7 @@ pub fn apply() {
         }
     };
 
-    let files = recursive_list(dots_dir);
+    let files = utils::recursive_list(dots_dir);
 
     for file in files {
         if let Ok(relative) = file.strip_prefix(dots_dir) {
@@ -104,32 +100,67 @@ pub fn apply() {
     }
 }
 
-fn recursive_list(path: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
+pub fn list() {
+    let dots_dir = Path::new("/home/doom/dots");
+    let files = utils::recursive_list(dots_dir);
 
-    if !path.is_dir() {
-        return files;
-    }
-
-    if let Ok(entries) = fs::read_dir(path) {
-        for entry in entries {
-            if let Ok(entry) = entry {
-                let entry_path = entry.path();
-
-                if let Some(name) = entry.file_name().to_str() {
-                    if name == ".git" {
-                        continue;
-                    }
-                }
-
-                if entry_path.is_dir() {
-                    files.extend(recursive_list(&entry_path));
-                } else {
-                    files.push(entry_path);
-                }
-            }
+    for file in files {
+        if let Ok(relative) = file.strip_prefix(dots_dir) {
+            cprintln!("<c>• {}</>", relative.to_string_lossy());
         }
     }
+}
 
-    files
+pub fn status() {
+    cprintln!(
+        "<dim>Legend:</> <cyan>+</> missing | <yellow>M</> modified | <green>=</> clean | <red>!</> error"
+    );
+
+    let dots_dir = Path::new("/home/doom/dots");
+
+    let home_dir = match home_dir() {
+        Some(p) => p,
+        None => {
+            cprintln!("<red>!</> HOME not found");
+            return;
+        }
+    };
+
+    let files = utils::recursive_list(dots_dir);
+
+    for file in files {
+        let relative = match file.strip_prefix(dots_dir) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+
+        let home_path = home_dir.join(relative);
+
+        if !home_path.exists() {
+            cprintln!("<cyan>+</> {}", relative.display());
+            continue;
+        }
+
+        let dots_hash = match utils::calculate_sha256(&file) {
+            Ok(h) => h,
+            Err(_) => {
+                cprintln!("<red>!</> {}", relative.display());
+                continue;
+            }
+        };
+
+        let home_hash = match utils::calculate_sha256(&home_path) {
+            Ok(h) => h,
+            Err(_) => {
+                cprintln!("<red>!</> {}", relative.display());
+                continue;
+            }
+        };
+
+        if dots_hash == home_hash {
+            cprintln!("<green>=</> {}", relative.display());
+        } else {
+            cprintln!("<yellow>M</> {}", relative.display());
+        }
+    }
 }
