@@ -15,9 +15,16 @@
 
 Built for users who want full control over their environment with minimal overhead.
 
+## Design goals
+
+- Keep dotfile management simple and predictable.
+- Avoid symlinks and hidden magic.
+- Make every action explicit and reversible.
+- Follow a clean, UNIX-like workflow.
+
 ## Usage
 
-```sh
+```text
 Usage: dotrs [OPTIONS] --action <ACTION>
 
 Options:
@@ -27,9 +34,12 @@ Options:
   -V, --version          Print version
 ```
 
+- Typical workflow:
+`init → add → status → apply`
+
 - Initialize dotfiles
 
-```shell
+```sh
 dotrs --action init
 ```
 
@@ -37,11 +47,11 @@ Creates a ~/dots directory and initializes a Git repository inside it.
 
 - Check status
 
-```shell
+```sh
 dotrs --action status
 ```
 
-```shell
+```sh
 Legend: + missing | M modified | = clean | ! error
 = .config/noctalia/templates/pywalfox-colors.json
 = .config/noctalia/templates/zathura-colors
@@ -51,13 +61,13 @@ Legend: + missing | M modified | = clean | ! error
 = .config/rmpc/config.ron
 ```
 
-- Add a file.
+- Add a file
 
-```shell
+```sh
 dotrs --action add --file alacritty.toml
 ```
 
-```shell
+```sh
 ~/dots/
 .
 └── .config
@@ -65,8 +75,16 @@ dotrs --action add --file alacritty.toml
         └── alacritty.toml
 ```
 
-- Apply dotfiles.
+- Apply dotfiles
 
-```shell
+```sh
 dotrs --action apply
 ```
+
+```sh
+B .config/alacritty/alacritty.toml.bak
+→ .config/alacritty/alacritty.toml
+done
+```
+
+Automatically backs up modified files.

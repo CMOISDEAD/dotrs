@@ -104,7 +104,7 @@ pub fn apply() {
 
                     match fs::copy(&target_path, &backup_path) {
                         Ok(_) => {
-                            cprintln!("<dim>B</> {}", file.relative_path.display());
+                            cprintln!("<dim>B</> {}", backup_path.display());
                         }
                         Err(_) => {
                             cprintln!("<red>!</> {}", file.relative_path.display());
