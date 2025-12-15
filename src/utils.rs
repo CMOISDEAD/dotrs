@@ -1,3 +1,4 @@
+use dirs_next::home_dir;
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File},
@@ -51,4 +52,87 @@ pub fn calculate_sha256(path: &Path) -> Result<String> {
 
     let hash = hasher.finalize();
     Ok(format!("{:x}", hash))
+}
+
+pub enum FileStatus {
+    MISSING,
+    MODIFIED,
+    CLEAN,
+    ERROR,
+}
+
+pub struct DotFile {
+    pub relative_path: PathBuf,
+    pub status: FileStatus,
+}
+
+pub fn scan_dots() -> Vec<DotFile> {
+    let dots_dir = Path::new("/home/doom/dots");
+
+    let home_dir = match home_dir() {
+        Some(p) => p,
+        None => return Vec::new(),
+    };
+
+    let mut results = Vec::new();
+
+    for file in recursive_list(dots_dir) {
+        let relative = match file.strip_prefix(dots_dir) {
+            Ok(p) => p.to_path_buf(),
+            Err(_) => continue,
+        };
+
+        let home_path = home_dir.join(&relative);
+
+        // Case 1: file does not exist in HOME
+        if !home_path.exists() {
+            results.push(DotFile {
+                relative_path: relative,
+                status: FileStatus::MISSING,
+            });
+            continue;
+        }
+
+        // Case 2: hash comparison
+        let dots_hash = match calculate_sha256(&file) {
+            Ok(h) => h,
+            Err(_) => {
+                results.push(DotFile {
+                    relative_path: relative,
+                    status: FileStatus::ERROR,
+                });
+                continue;
+            }
+        };
+
+        let home_hash = match calculate_sha256(&home_path) {
+            Ok(h) => h,
+            Err(_) => {
+                results.push(DotFile {
+                    relative_path: relative,
+                    status: FileStatus::ERROR,
+                });
+                continue;
+            }
+        };
+
+        let status = if dots_hash == home_hash {
+            FileStatus::CLEAN
+        } else {
+            FileStatus::MODIFIED
+        };
+
+        results.push(DotFile {
+            relative_path: relative,
+            status,
+        });
+    }
+
+    results
+}
+
+pub fn with_bak(path: &Path) -> PathBuf {
+    let mut backup = path.as_os_str().to_owned();
+    backup.push(".bak");
+    PathBuf::from(backup)
 }

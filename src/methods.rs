@@ -2,7 +2,7 @@ use std::{env::home_dir, fs, io::ErrorKind, path::Path, process::Command};
 
 use color_print::cprintln;
 
-use crate::utils;
+use crate::utils::{self, FileStatus};
 
 pub fn init() {
     let dots_dir = Path::new("/home/doom/dots");
@@ -71,51 +71,18 @@ pub fn add(filename: Option<String>) {
     }
 }
 
-pub fn apply() {
-    let dots_dir = Path::new("/home/doom/dots");
-
-    let home_dir = match home_dir() {
-        Some(p) => p,
-        None => {
-            cprintln!("<red>✗</> HOME not found");
-            return;
-        }
-    };
-
-    let files = utils::recursive_list(dots_dir);
-
-    for file in files {
-        if let Ok(relative) = file.strip_prefix(dots_dir) {
-            let destination = home_dir.join(relative);
-
-            if let Some(parent) = destination.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-
-            match fs::copy(&file, &destination) {
-                Ok(_) => cprintln!("<green>→</> {}", relative.display()),
-                Err(_) => cprintln!("<red>✗</> {}", relative.display()),
-            }
-        }
-    }
-}
-
 pub fn list() {
     let dots_dir = Path::new("/home/doom/dots");
     let files = utils::recursive_list(dots_dir);
 
     for file in files {
         if let Ok(relative) = file.strip_prefix(dots_dir) {
-            cprintln!("<c>• {}</>", relative.to_string_lossy());
+            cprintln!("<cyan>• {}</>", relative.to_string_lossy());
         }
     }
 }
 
-pub fn status() {
-    cprintln!(
-        "<dim>Legend:</> <cyan>+</> missing | <yellow>M</> modified | <green>=</> clean | <red>!</> error"
-    );
-
+pub fn apply() {
     let dots_dir = Path::new("/home/doom/dots");
 
     let home_dir = match home_dir() {
@@ -126,41 +93,56 @@ pub fn status() {
         }
     };
 
-    let files = utils::recursive_list(dots_dir);
+    for file in utils::scan_dots() {
+        match file.status {
+            FileStatus::MISSING | FileStatus::MODIFIED => {
+                let source_path = dots_dir.join(&file.relative_path);
+                let target_path = home_dir.join(&file.relative_path);
 
-    for file in files {
-        let relative = match file.strip_prefix(dots_dir) {
-            Ok(p) => p,
-            Err(_) => continue,
-        };
+                if target_path.exists() {
+                    let backup_path = utils::with_bak(&target_path);
 
-        let home_path = home_dir.join(relative);
+                    match fs::copy(&target_path, &backup_path) {
+                        Ok(_) => {
+                            cprintln!("<dim>B</> {}", file.relative_path.display());
+                        }
+                        Err(_) => {
+                            cprintln!("<red>!</> {}", file.relative_path.display());
+                            continue;
+                        }
+                    }
+                }
 
-        if !home_path.exists() {
-            cprintln!("<cyan>+</> {}", relative.display());
-            continue;
+                if let Some(parent) = target_path.parent() {
+                    if fs::create_dir_all(parent).is_err() {
+                        cprintln!("<red>!</> {}", file.relative_path.display());
+                        continue;
+                    }
+                }
+
+                match fs::copy(&source_path, &target_path) {
+                    Ok(_) => cprintln!("<green>→</> {}", file.relative_path.display()),
+                    Err(_) => cprintln!("<red>!</> {}", file.relative_path.display()),
+                }
+            }
+            _ => {}
         }
+    }
 
-        let dots_hash = match utils::calculate_sha256(&file) {
-            Ok(h) => h,
-            Err(_) => {
-                cprintln!("<red>!</> {}", relative.display());
-                continue;
-            }
-        };
+    cprintln!("<dim>done</>");
+}
 
-        let home_hash = match utils::calculate_sha256(&home_path) {
-            Ok(h) => h,
-            Err(_) => {
-                cprintln!("<red>!</> {}", relative.display());
-                continue;
-            }
-        };
+pub fn status() {
+    cprintln!(
+        "<dim>Legend:</> <cyan>+</> missing | <yellow>M</> modified | <green>=</> clean | <red>!</> error"
+    );
 
-        if dots_hash == home_hash {
-            cprintln!("<green>=</> {}", relative.display());
-        } else {
-            cprintln!("<yellow>M</> {}", relative.display());
+    for file in utils::scan_dots() {
+        match file.status {
+            FileStatus::MISSING => cprintln!("<cyan>+</> {}", file.relative_path.display()),
+            FileStatus::MODIFIED => cprintln!("<yellow>M</> {}", file.relative_path.display()),
+            FileStatus::CLEAN => cprintln!("<green>=</> {}", file.relative_path.display()),
+            FileStatus::ERROR => cprintln!("<red>!</> {}", file.relative_path.display()),
         }
     }
 }
