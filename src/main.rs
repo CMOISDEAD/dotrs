@@ -7,6 +7,7 @@ use clap::{Parser, ValueEnum};
 enum Action {
     INIT,
     APPLY,
+    SYNC,
     ADD,
     REMOVE,
     LIST,
@@ -29,8 +30,9 @@ fn main() {
         Action::INIT => methods::init(),
         Action::APPLY => methods::apply(),
         Action::ADD => methods::add(args.file),
-        Action::REMOVE => println!("remove dotfiles"),
+        Action::REMOVE => methods::remove(args.file),
         Action::LIST => methods::list(),
         Action::STATUS => methods::status(),
+        Action::SYNC => methods::sync(),
     }
 }

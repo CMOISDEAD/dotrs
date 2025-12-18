@@ -1,0 +1,11 @@
+:PROPERTIES:
+:CATEGORY: dotrs
+:END:
+
+* DONE Implement "remove" action.
+CLOSED: [2025-12-17 Wed 18:19]
+
+* DONE add an ignore files list, and then add a configuration file.
+CLOSED: [2025-12-18 Thu 18:37]
+implement an ignore file list and a configuration file to manage some options mainly dotrs directory path.
+

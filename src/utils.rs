@@ -5,7 +5,8 @@ use std::{
     io::{BufReader, Read, Result},
     path::{Path, PathBuf},
 };
-pub fn recursive_list(path: &Path) -> Vec<PathBuf> {
+
+pub fn recursive_list(path: &PathBuf) -> Vec<PathBuf> {
     let mut files = Vec::new();
 
     if !path.is_dir() {
@@ -54,6 +55,7 @@ pub fn calculate_sha256(path: &Path) -> Result<String> {
     Ok(format!("{:x}", hash))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileStatus {
     MISSING,
     MODIFIED,
@@ -67,7 +69,7 @@ pub struct DotFile {
 }
 
 pub fn scan_dots() -> Vec<DotFile> {
-    let dots_dir = Path::new("/home/doom/dots");
+    let dots_dir = get_dots_dir();
 
     let home_dir = match home_dir() {
         Some(p) => p,
@@ -76,8 +78,8 @@ pub fn scan_dots() -> Vec<DotFile> {
 
     let mut results = Vec::new();
 
-    for file in recursive_list(dots_dir) {
-        let relative = match file.strip_prefix(dots_dir) {
+    for file in recursive_list(&dots_dir) {
+        let relative = match file.strip_prefix(&dots_dir) {
             Ok(p) => p.to_path_buf(),
             Err(_) => continue,
         };
@@ -135,4 +137,11 @@ pub fn with_bak(path: &Path) -> PathBuf {
     let mut backup = path.as_os_str().to_owned();
     backup.push(".bak");
     PathBuf::from(backup)
+}
+
+
+pub fn get_dots_dir () -> PathBuf {
+    let home_dir = dirs_next::home_dir().expect("No Home");
+
+    home_dir.join("dots")
 }

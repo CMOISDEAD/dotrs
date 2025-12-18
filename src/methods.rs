@@ -5,10 +5,12 @@ use color_print::cprintln;
 use crate::utils::{self, FileStatus};
 
 pub fn init() {
-    let dots_dir = Path::new("/home/doom/dots");
+    let dots_dir = utils::get_dots_dir();
 
-    match fs::create_dir(dots_dir) {
-        Ok(_) => cprintln!("<green>✓</> dots directory created"),
+    match fs::create_dir(&dots_dir) {
+        Ok(_) => {
+            cprintln!("<green>✓</> dots directory created")
+        }
         Err(e) => match e.kind() {
             ErrorKind::AlreadyExists => {
                 cprintln!("<yellow>•</> dots directory already exists")
@@ -35,7 +37,7 @@ pub fn init() {
 }
 
 pub fn add(filename: Option<String>) {
-    let dots_dir = Path::new("/home/doom/dots");
+    let dots_dir = utils::get_dots_dir();
     let filename = filename.expect("missing file");
 
     let home_dir = dirs_next::home_dir().expect("no HOME");
@@ -71,19 +73,57 @@ pub fn add(filename: Option<String>) {
     }
 }
 
+pub fn remove(filename: Option<String>) {
+    let filename = filename.expect("file not managed");
+    let relative = Path::new(&filename);
+    let dots_dir = utils::get_dots_dir();
+    let target = dots_dir.join(relative);
+
+    if !target.exists() {
+        cprintln!("<red>!</> not managed: {}", filename);
+        return;
+    }
+
+    if fs::remove_file(&target).is_err() {
+        cprintln!("<red>!</> failed to remove {}", filename);
+        return;
+    }
+
+    let mut current = target.parent();
+
+    while let Some(dir) = current {
+        if dir == dots_dir {
+            break;
+        }
+
+        if fs::read_dir(dir)
+            .map(|mut i| i.next().is_none())
+            .unwrap_or(false)
+        {
+            let _ = fs::remove_dir(dir);
+        } else {
+            break;
+        }
+
+        current = dir.parent();
+    }
+
+    cprintln!("<green>→</> removed {}", filename);
+}
+
 pub fn list() {
-    let dots_dir = Path::new("/home/doom/dots");
-    let files = utils::recursive_list(dots_dir);
+    let dots_dir = utils::get_dots_dir();
+    let files = utils::recursive_list(&dots_dir);
 
     for file in files {
-        if let Ok(relative) = file.strip_prefix(dots_dir) {
+        if let Ok(relative) = file.strip_prefix(&dots_dir) {
             cprintln!("<cyan>• {}</>", relative.to_string_lossy());
         }
     }
 }
 
 pub fn apply() {
-    let dots_dir = Path::new("/home/doom/dots");
+    let dots_dir = utils::get_dots_dir();
 
     let home_dir = match home_dir() {
         Some(p) => p,
@@ -132,6 +172,55 @@ pub fn apply() {
     cprintln!("<dim>done</>");
 }
 
+pub fn sync() {
+    let dots_dir = utils::get_dots_dir();
+
+    let home_dir = match home_dir() {
+        Some(p) => p,
+        None => {
+            cprintln!("<red>!</> HOME not found");
+            return;
+        }
+    };
+
+    let files = utils::scan_dots();
+    let mut synced = 0;
+
+    for file in files {
+        if file.status != FileStatus::MODIFIED {
+            continue;
+        }
+
+        let source = home_dir.join(&file.relative_path);
+        let destination = dots_dir.join(&file.relative_path);
+
+        if let Some(parent) = destination.parent()
+            && fs::create_dir_all(parent).is_err()
+        {
+            cprintln!("<red>!</> {}", file.relative_path.display());
+            continue;
+        }
+
+        match fs::copy(&source, &destination) {
+            Ok(_) => {
+                cprintln!("<green>→</> synced {}", file.relative_path.display());
+                synced += 1;
+            }
+            Err(_) => {
+                cprintln!("<red>!</> {}", file.relative_path.display());
+            }
+        }
+    }
+
+    if synced == 0 {
+        cprintln!("<dim>nothing to sync</>");
+    } else {
+        cprintln!("<green>done</>");
+    }
+}
+
+
+/// show status of each tracked file
 pub fn status() {
     cprintln!(
         "<dim>Legend:</> <cyan>+</> missing | <yellow>M</> modified | <green>=</> clean | <red>!</> error"
