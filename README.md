@@ -28,7 +28,7 @@ Built for users who want full control over their environment with minimal overhe
 Usage: dotrs [OPTIONS] --action <ACTION>
 
 Options:
-  -a, --action <ACTION>  [possible values: init, apply, add, remove, list, status]
+  -a, --action <ACTION>  [possible values: init, apply, sync, add, remove, list, status]
   -f, --file <FILE>
   -h, --help             Print help
   -V, --version          Print version
@@ -40,7 +40,7 @@ Options:
 - Initialize dotfiles
 
 ```sh
-dotrs --action init
+$ dotrs --action init
 ```
 
 Creates a ~/dots directory and initializes a Git repository inside it.
@@ -48,7 +48,7 @@ Creates a ~/dots directory and initializes a Git repository inside it.
 - Check status
 
 ```sh
-dotrs --action status
+$ dotrs --action status
 ```
 
 ```sh
@@ -64,7 +64,7 @@ Legend: + missing | M modified | = clean | ! error
 - Add a file
 
 ```sh
-dotrs --action add --file alacritty.toml
+$ dotrs --action add --file alacritty.toml
 ```
 
 ```sh
@@ -78,7 +78,7 @@ dotrs --action add --file alacritty.toml
 - Apply dotfiles
 
 ```sh
-dotrs --action apply
+$ dotrs --action apply
 ```
 
 ```sh
@@ -87,4 +87,44 @@ B .config/alacritty/alacritty.toml.bak
 done
 ```
 
-Automatically backs up modified files.
+Copies dotfiles into $HOME
+Automatically creates .bak backups for modified files
+
+- Sync local changes back to dotfiles
+
+Use sync when local files have been modified and you want to update the dotfiles repository.
+
+```sh
+$ dotrs --action status
+```
+
+```sh
+Legend: + missing | M modified | = clean | ! error
+= .config/noctalia/templates/pywalfox-colors.json
+= .config/noctalia/templates/zathura-colors
+M .config/niri/config.kdl
+= .config/ghostty/config
+= .config/rmpc/config.ron
+```
+
+```sh
+$ dotrs --action sync
+```
+
+```sh
+→ synced .config/niri/config.kdl
+done
+```
+
+```sh
+$ dotrs --action status
+```
+
+```sh
+Legend: + missing | M modified | = clean | ! error
+= .config/noctalia/templates/pywalfox-colors.json
+= .config/noctalia/templates/zathura-colors
+= .config/niri/config.kdl
+= .config/ghostty/config
+= .config/rmpc/config.ron
+```
