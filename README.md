@@ -4,9 +4,6 @@
   <img src="https://github.com/user-attachments/assets/cb07e5ab-b87e-4473-9824-12e02e1fcb25" width="240" alt="dotrs logo"/>
 </p>
 
-> [!NOTE]
-> This project is still under active development and is not ready for production use.
-
 **dotrs** is a minimalist dotfiles manager focused on practicality and simplicity.
 
 - No bloated features.
