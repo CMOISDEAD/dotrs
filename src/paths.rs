@@ -1,5 +1,3 @@
-//! Path handling: normalization and mapping command line arguments to managed paths.
-
 use std::{
     fs,
     path::{Component, Path, PathBuf},
@@ -10,7 +8,6 @@ use crate::{
     error::{Result, msg},
 };
 
-/// Lexically normalize a path: drop `.` and resolve `..` without touching the filesystem.
 pub fn normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
@@ -31,9 +28,6 @@ pub enum Root {
     Dots,
 }
 
-/// Which root (dots directory or HOME) an absolute path lives in, and the path
-/// relative to it. Symlinked HOME/dots directories are handled by also comparing
-/// against their canonical form. Symlinks in the path itself are not resolved.
 fn relative_to_roots(path: &Path, home: &Path, dots: &Path) -> Option<(Root, PathBuf)> {
     let path = normalize(path);
     let roots = [
@@ -48,11 +42,6 @@ fn relative_to_roots(path: &Path, home: &Path, dots: &Path) -> Option<(Root, Pat
         .find_map(|(root, r)| Some((root, path.strip_prefix(r).ok()?.to_path_buf())))
 }
 
-/// Resolve a path given on the command line to a path relative to HOME
-/// (equivalently, to the dots directory).
-///
-/// Relative paths are tried against the current directory first and then
-/// against HOME; the first candidate accepted by `accept` wins.
 pub fn resolve(
     ctx: &Context,
     arg: &Path,

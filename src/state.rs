@@ -1,8 +1,3 @@
-//! Per-machine record of the last synchronized hash of every managed file.
-//!
-//! Stored in `$XDG_STATE_HOME/dotrs/state` (default `~/.local/state/dotrs/state`)
-//! using the `sha256sum` format: `<hash>  <relative path>`.
-
 use std::{
     collections::BTreeMap,
     fs, io,
@@ -16,7 +11,6 @@ pub struct State {
 }
 
 impl State {
-    /// Load the state file; a missing or unreadable file yields an empty state.
     pub fn load(path: PathBuf) -> State {
         let content = fs::read_to_string(&path).unwrap_or_default();
         let entries = content
@@ -51,7 +45,6 @@ impl State {
         }
     }
 
-    /// Write the state atomically (temp file + rename), only if it changed.
     pub fn save(&mut self) -> io::Result<()> {
         if !self.dirty {
             return Ok(());

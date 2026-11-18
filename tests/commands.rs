@@ -1,5 +1,3 @@
-//! End-to-end tests of every command against a temporary HOME.
-
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -20,7 +18,6 @@ struct Env {
 }
 
 impl Env {
-    /// A fresh HOME with an initialized-looking dots directory (no git needed).
     fn new() -> Env {
         let tmp = TempDir::new().unwrap();
         let ctx = Context::with_home(tmp.path());
@@ -99,8 +96,6 @@ fn to_paths(paths: &[&str]) -> Vec<PathBuf> {
     paths.iter().map(PathBuf::from).collect()
 }
 
-// ---------------------------------------------------------------- add
-
 #[test]
 fn add_copies_file_into_dots_and_marks_it_clean() {
     let env = Env::new();
@@ -153,7 +148,6 @@ fn add_rejects_symlinks_outside_paths_and_dots_dir() {
     assert!(env.add(&["/etc/hostname"]).is_err());
     assert!(env.add(&["dots/inside"]).is_err());
     assert!(env.add(&["does-not-exist"]).is_err());
-    // adding HOME itself would swallow the dots directory
     assert!(env.add(&[env.ctx.home.to_str().unwrap()]).is_err());
     assert!(env.managed() == [PathBuf::from("inside")]);
 }
@@ -168,8 +162,6 @@ fn add_reports_each_failure_and_keeps_going() {
     assert!(matches!(err, Error::Failed(2)));
     assert_eq!(env.managed(), [PathBuf::from("good")]);
 }
-
-// ---------------------------------------------------------------- remove
 
 #[test]
 fn remove_never_escapes_the_dots_directory() {
@@ -190,7 +182,6 @@ fn remove_never_escapes_the_dots_directory() {
             "{arg}"
         );
     }
-    // HOME itself would match every managed file
     assert!(commands::remove(&env.ctx, std::slice::from_ref(&env.ctx.home)).is_err());
 
     assert_eq!(read(&env.home(".bashrc")), "precious");
@@ -223,8 +214,6 @@ fn remove_refuses_ignored_files() {
     assert!(env.dots(".git/HEAD").exists());
 }
 
-// ---------------------------------------------------------------- ignore
-
 #[test]
 fn builtin_and_custom_ignore_patterns() {
     let env = Env::new();
@@ -236,7 +225,6 @@ fn builtin_and_custom_ignore_patterns() {
 
     let ignored = |p: &str| ignore.is_ignored(Path::new(p));
 
-    // built-in
     assert!(ignored(".git"));
     assert!(ignored(".config/nvim/.git/config"));
     assert!(ignored("README.md"));
@@ -246,7 +234,6 @@ fn builtin_and_custom_ignore_patterns() {
         !ignored(".config/app/README.md"),
         "README is only ignored at the root"
     );
-    // custom
     assert!(ignored(".vimrc.swp"));
     assert!(ignored(".config/a/b.swp"));
     assert!(ignored("scripts/install.sh"));
@@ -268,8 +255,6 @@ fn ignored_repository_files_are_never_applied() {
     assert!(!env.home(".gitignore").exists());
     assert_eq!(read(&env.home(".bashrc")), "bash");
 }
-
-// ---------------------------------------------------------------- status
 
 #[test]
 fn status_detects_the_direction_of_every_change() {
@@ -299,7 +284,6 @@ fn status_detects_the_direction_of_every_change() {
 #[test]
 fn identical_files_are_recorded_so_later_changes_have_a_direction() {
     let env = Env::new();
-    // e.g. a fresh clone where HOME already matches, without any state yet
     env.write_dots(".bashrc", "same");
     env.write_home(".bashrc", "same");
 
@@ -333,8 +317,6 @@ fn home_entry_that_is_not_a_file_is_an_error() {
     assert_eq!(env.status_of("thing"), FileStatus::Error);
     assert!(env.apply(&[], true, false).is_err());
 }
-
-// ---------------------------------------------------------------- apply / sync
 
 #[test]
 fn apply_writes_missing_and_updated_and_skips_local_changes() {
@@ -424,8 +406,6 @@ fn sync_copies_local_changes_and_skips_repo_changes() {
     env.sync(&["conflict"], true, false).unwrap();
     assert_eq!(read(&env.dots("conflict")), "home");
 }
-
-// ---------------------------------------------------------------- backups / restore
 
 #[test]
 fn backups_never_overwrite_each_other() {

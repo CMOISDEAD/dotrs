@@ -81,7 +81,6 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(Error::Exit(code)) => ExitCode::from(code),
-        // a single failure was already reported, no need for a summary
         Err(Error::Failed(1)) => ExitCode::FAILURE,
         Err(e) => {
             output::error(e);

@@ -2,15 +2,9 @@ use std::{fmt, io};
 
 #[derive(Debug)]
 pub enum Error {
-    /// an I/O error with a description of what was being done
-    Io {
-        context: String,
-        source: io::Error,
-    },
+    Io { context: String, source: io::Error },
     Msg(String),
-    /// some files failed; each failure was already reported
     Failed(usize),
-    /// not an error, just a non-zero exit status (e.g. `status --exit-code`)
     Exit(u8),
 }
 
@@ -34,7 +28,6 @@ pub fn msg(m: impl Into<String>) -> Error {
     Error::Msg(m.into())
 }
 
-/// Attach context to I/O errors: `fs::copy(a, b).context(|| format!("cannot copy {a}"))?`
 pub trait IoContext<T> {
     fn context(self, what: impl FnOnce() -> String) -> Result<T>;
 }

@@ -9,15 +9,11 @@ use crate::{
     state::State,
 };
 
-/// Everything a command needs to know about the environment, resolved once.
 #[derive(Debug, Clone)]
 pub struct Context {
     pub home: PathBuf,
-    /// the dots directory (`$DOTRS_DIR` or `~/dots`)
     pub dots: PathBuf,
-    /// the state file (`$XDG_STATE_HOME/dotrs/state`)
     pub state: PathBuf,
-    /// base for relative command line paths
     pub cwd: PathBuf,
 }
 
@@ -28,7 +24,6 @@ impl Context {
             .ok_or_else(|| msg("cannot determine HOME"))?;
 
         let dots = match env::var_os("DOTRS_DIR").filter(|v| !v.is_empty()) {
-            // relative values are taken from HOME
             Some(dir) => normalize(&home.join(dir)),
             None => home.join("dots"),
         };
@@ -48,7 +43,6 @@ impl Context {
         })
     }
 
-    /// A context rooted at `home` with the default layout, for tests and embedding.
     pub fn with_home(home: &Path) -> Context {
         Context {
             home: home.to_path_buf(),

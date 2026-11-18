@@ -16,7 +16,6 @@ use crate::{
     state::State,
 };
 
-/// Options shared by `apply` and `sync`.
 pub struct Transfer<'a> {
     pub paths: &'a [PathBuf],
     pub dry_run: bool,
@@ -35,7 +34,6 @@ fn failures(failed: usize) -> Result<()> {
     }
 }
 
-/// Copy `from` to `to`, creating parent directories as needed.
 fn copy_file(from: &Path, to: &Path) -> Result<()> {
     if let Some(parent) = to.parent() {
         fs::create_dir_all(parent).context(|| format!("cannot create {}", parent.display()))?;
@@ -44,15 +42,12 @@ fn copy_file(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Copy `path` to a new timestamped backup and return the backup path.
 fn backup(path: &Path) -> Result<PathBuf> {
     let backup_path = next_backup_path(path);
     fs::copy(path, &backup_path).context(|| format!("cannot back up {}", path.display()))?;
     Ok(backup_path)
 }
 
-/// Resolve command line paths to managed paths (files or directories) and keep
-/// only the scanned files under them. No paths means every file.
 fn select(ctx: &Context, files: Vec<DotFile>, paths: &[PathBuf]) -> Result<Vec<DotFile>> {
     if paths.is_empty() {
         return Ok(files);
@@ -99,7 +94,6 @@ fn report_error(file: &DotFile) {
     output::error(file.error.as_deref().unwrap_or("unknown error"));
 }
 
-/// Create the dots directory, its ignore file and a git repository.
 pub fn init(ctx: &Context) -> Result<()> {
     let dots = &ctx.dots;
 
@@ -142,7 +136,6 @@ pub fn init(ctx: &Context) -> Result<()> {
     Ok(())
 }
 
-/// Copy files (or whole directories) from HOME into the dots directory.
 pub fn add(ctx: &Context, paths: &[PathBuf]) -> Result<()> {
     let dots = &ctx.dots;
     let ignore = Ignore::load(dots);
@@ -227,7 +220,6 @@ fn add_one(ctx: &Context, arg: &Path, ignore: &Ignore, state: &mut State) -> Res
     Ok(())
 }
 
-/// Stop managing files: delete them from the dots directory. HOME is never touched.
 pub fn remove(ctx: &Context, paths: &[PathBuf]) -> Result<()> {
     let dots = &ctx.dots;
     let managed = scan::managed_files(dots);
@@ -250,8 +242,7 @@ pub fn remove(ctx: &Context, paths: &[PathBuf]) -> Result<()> {
             }
         };
 
-        // `managed` only contains regular files found without following symlinks,
-        // so every target is guaranteed to live inside the dots directory.
+        // safe: `managed` never follows symlinks, so every target is inside the dots directory
         for file in managed.iter().filter(|m| m.starts_with(&rel)) {
             let target = dots.join(file);
             if let Err(e) =
@@ -271,7 +262,6 @@ pub fn remove(ctx: &Context, paths: &[PathBuf]) -> Result<()> {
     failures(failed)
 }
 
-/// Remove empty directories above `path`, stopping at (and never removing) `root`.
 fn remove_empty_parents(path: &Path, root: &Path) {
     let mut current = path.parent();
     while let Some(dir) = current {
@@ -290,7 +280,6 @@ pub fn list(ctx: &Context) -> Result<()> {
     Ok(())
 }
 
-/// Show the status of every managed file.
 pub fn status(ctx: &Context, exit_code: bool) -> Result<()> {
     let mut state = ctx.load_state();
     let files = scan::scan(ctx, &mut state);
@@ -319,7 +308,6 @@ pub fn status(ctx: &Context, exit_code: bool) -> Result<()> {
         report_error(file);
     }
 
-    // record files found clean, so later changes have a known direction
     save_state(&mut state)?;
 
     if exit_code && files.iter().any(|f| f.status != FileStatus::Clean) {
@@ -328,7 +316,6 @@ pub fn status(ctx: &Context, exit_code: bool) -> Result<()> {
     Ok(())
 }
 
-/// Show differences between the dots directory (-) and HOME (+).
 pub fn diff(ctx: &Context, paths: &[PathBuf]) -> Result<()> {
     let Context { home, dots, .. } = ctx;
     let mut state = ctx.load_state();
@@ -356,8 +343,6 @@ pub fn diff(ctx: &Context, paths: &[PathBuf]) -> Result<()> {
     failures(failed)
 }
 
-/// Show a unified diff with git (better output), falling back to diff(1).
-/// Runs from HOME so the file labels are short (`dots/.bashrc` vs `.bashrc`).
 fn run_diff(home: &Path, old: &Path, new: &Path) -> Result<()> {
     let old = old.strip_prefix(home).unwrap_or(old);
     let new = new.strip_prefix(home).unwrap_or(new);
@@ -390,7 +375,6 @@ fn run_diff(home: &Path, old: &Path, new: &Path) -> Result<()> {
     }
 }
 
-/// Copy dotfiles into HOME: files missing in HOME or updated in the repository.
 pub fn apply(ctx: &Context, opts: Transfer) -> Result<()> {
     let Context { home, dots, .. } = ctx;
     let mut state = ctx.load_state();
@@ -457,7 +441,6 @@ pub fn apply(ctx: &Context, opts: Transfer) -> Result<()> {
     failures(failed)
 }
 
-/// Copy files changed in HOME back into the dots directory.
 pub fn sync(ctx: &Context, opts: Transfer) -> Result<()> {
     let Context { home, dots, .. } = ctx;
     let mut state = ctx.load_state();
@@ -515,8 +498,6 @@ pub fn sync(ctx: &Context, opts: Transfer) -> Result<()> {
     failures(failed)
 }
 
-/// Restore the most recent backup of files in HOME.
-/// The current file is backed up first, so running restore again undoes it.
 pub fn restore(ctx: &Context, paths: &[PathBuf]) -> Result<()> {
     let mut failed = 0;
 

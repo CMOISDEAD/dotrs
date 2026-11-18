@@ -3,10 +3,8 @@ use std::{
     path::{Component, Path},
 };
 
-/// Name of the ignore file, stored at the root of the dots directory.
 pub const IGNORE_FILE: &str = ".dotrsignore";
 
-/// Patterns that are always ignored, regardless of the ignore file.
 const BUILTIN: &[&str] = &[
     ".git",
     "/.github",
@@ -16,7 +14,6 @@ const BUILTIN: &[&str] = &[
     "/LICENSE*",
 ];
 
-/// Template written by `init`.
 pub const TEMPLATE: &str = "\
 # dotrs ignore file: one pattern per line.
 # Files matching these patterns are never applied to HOME.
@@ -39,7 +36,6 @@ pub struct Ignore {
 }
 
 impl Ignore {
-    /// Built-in patterns plus the ones in `<dots>/.dotrsignore`, if present.
     pub fn load(dots_dir: &Path) -> Ignore {
         let content = fs::read_to_string(dots_dir.join(IGNORE_FILE)).unwrap_or_default();
         Ignore::from_lines(BUILTIN.iter().copied().chain(content.lines()))
@@ -58,7 +54,6 @@ impl Ignore {
         Ignore { patterns }
     }
 
-    /// `relative` is a path relative to the dots directory.
     pub fn is_ignored(&self, relative: &Path) -> bool {
         let parts: Vec<String> = relative
             .components()
@@ -70,7 +65,6 @@ impl Ignore {
 
         self.patterns.iter().any(|p| {
             if p.anchored {
-                // match the pattern against every leading prefix (so directories match)
                 (1..=parts.len()).any(|n| glob(&p.glob, &parts[..n].join("/")))
             } else {
                 parts.iter().any(|part| glob(&p.glob, part))
@@ -79,7 +73,6 @@ impl Ignore {
     }
 }
 
-/// Minimal glob: `*` matches any run of characters except '/', `?` matches one.
 fn glob(pattern: &str, text: &str) -> bool {
     let p: Vec<char> = pattern.chars().collect();
     let t: Vec<char> = text.chars().collect();

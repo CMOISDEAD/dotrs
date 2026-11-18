@@ -1,5 +1,3 @@
-//! Discovering managed files and comparing them with HOME.
-
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File},
@@ -9,7 +7,6 @@ use std::{
 
 use crate::{context::Context, ignore::Ignore, state::State};
 
-/// Files managed in `dots_dir`, as paths relative to it.
 pub fn managed_files(dots_dir: &Path) -> Vec<PathBuf> {
     let ignore = Ignore::load(dots_dir);
     let mut files = Vec::new();
@@ -24,9 +21,6 @@ pub fn managed_files(dots_dir: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// Collect regular files under `root/relative`, as paths relative to `root`.
-/// Ignored entries are skipped; symlinks are never followed and are collected
-/// separately in `symlinks`.
 pub fn walk(
     root: &Path,
     relative: &Path,
@@ -72,13 +66,9 @@ pub fn calculate_sha256(path: &Path) -> io::Result<String> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileStatus {
-    /// not present in HOME
     Missing,
-    /// changed in HOME since the last sync
     Modified,
-    /// changed in the dots repository since the last sync
     Updated,
-    /// changed on both sides, or no previous sync recorded
     Conflict,
     Clean,
     Error,
@@ -89,12 +79,9 @@ pub struct DotFile {
     pub status: FileStatus,
     pub dots_hash: Option<String>,
     pub home_hash: Option<String>,
-    /// set when `status` is `Error`
     pub error: Option<String>,
 }
 
-/// Compare every managed file against HOME and the last synchronized hash.
-/// Files found identical on both sides are recorded in `state`.
 pub fn scan(ctx: &Context, state: &mut State) -> Vec<DotFile> {
     let (home, dots) = (ctx.home.as_path(), ctx.dots.as_path());
     managed_files(dots)

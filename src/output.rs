@@ -1,6 +1,3 @@
-//! Tiny terminal output helpers. Colors are only emitted when the stream is a
-//! terminal and `NO_COLOR` is not set (https://no-color.org).
-
 use std::{
     env,
     fmt::Display,
@@ -43,7 +40,6 @@ fn paint_if(on: bool, code: &str, text: impl Display) -> String {
     }
 }
 
-/// Colorize text written to stdout.
 pub fn paint(code: &str, text: impl Display) -> String {
     paint_if(color_stdout(), code, text)
 }
