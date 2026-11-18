@@ -1,351 +1,571 @@
-use std::{env::home_dir, fs, io::ErrorKind, process::Command};
-
-use color_print::cprintln;
-
-use crate::{
-    ignore,
-    state::State,
-    utils::{self, FileStatus},
+use std::{
+    fs,
+    io::{self, Write},
+    path::{Path, PathBuf},
+    process::Command,
 };
 
-pub fn init() {
-    let dots_dir = utils::get_dots_dir();
+use crate::{
+    error::{Error, IoContext, Result, msg},
+    ignore::{self, Ignore},
+    output::{self, BLUE, CYAN, DIM, GREEN, MAGENTA, RED, YELLOW, paint},
+    state::State,
+    utils::{self, DotFile, FileStatus, Root},
+};
 
-    match fs::create_dir(&dots_dir) {
-        Ok(_) => {
-            cprintln!("<green>✓</> dots directory created")
-        }
-        Err(e) => match e.kind() {
-            ErrorKind::AlreadyExists => {
-                cprintln!("<yellow>•</> dots directory already exists")
-            }
-            ErrorKind::PermissionDenied => {
-                cprintln!("<red>✗</> permission denied");
-                return;
-            }
-            _ => {
-                cprintln!("<red>✗</> cannot create dots directory");
-                return;
-            }
-        },
+/// Options shared by `apply` and `sync`.
+pub struct Transfer<'a> {
+    pub paths: &'a [PathBuf],
+    pub dry_run: bool,
+    pub force: bool,
+}
+
+fn save_state(state: &mut State) -> Result<()> {
+    state.save().context(|| "cannot save state".into())
+}
+
+fn failures(failed: usize) -> Result<()> {
+    if failed == 0 {
+        Ok(())
+    } else {
+        Err(Error::Failed(failed))
+    }
+}
+
+/// Copy `from` to `to`, creating parent directories as needed.
+fn copy_file(from: &Path, to: &Path) -> Result<()> {
+    if let Some(parent) = to.parent() {
+        fs::create_dir_all(parent).context(|| format!("cannot create {}", parent.display()))?;
+    }
+    fs::copy(from, to).context(|| format!("cannot copy {} to {}", from.display(), to.display()))?;
+    Ok(())
+}
+
+/// Copy `path` to a new timestamped backup and return the backup path.
+fn backup(path: &Path) -> Result<PathBuf> {
+    let backup_path = utils::next_backup_path(path);
+    fs::copy(path, &backup_path).context(|| format!("cannot back up {}", path.display()))?;
+    Ok(backup_path)
+}
+
+/// Resolve command line paths to managed paths (files or directories) and keep
+/// only the scanned files under them. No paths means every file.
+fn select(
+    files: Vec<DotFile>,
+    paths: &[PathBuf],
+    home: &Path,
+    dots: &Path,
+) -> Result<Vec<DotFile>> {
+    if paths.is_empty() {
+        return Ok(files);
     }
 
-    let ignore_file = dots_dir.join(ignore::IGNORE_FILE);
+    let mut filters = Vec::new();
+    for arg in paths {
+        let (_, rel) = utils::resolve(
+            arg,
+            home,
+            dots,
+            |_, rel| files.iter().any(|f| f.relative_path.starts_with(rel)),
+            "not managed",
+        )?;
+        filters.push(rel);
+    }
+
+    Ok(files
+        .into_iter()
+        .filter(|f| filters.iter().any(|p| f.relative_path.starts_with(p)))
+        .collect())
+}
+
+fn status_symbol(status: FileStatus) -> String {
+    match status {
+        FileStatus::Missing => paint(CYAN, "+"),
+        FileStatus::Modified => paint(YELLOW, "M"),
+        FileStatus::Updated => paint(BLUE, "U"),
+        FileStatus::Conflict => paint(MAGENTA, "C"),
+        FileStatus::Clean => paint(GREEN, "="),
+        FileStatus::Error => paint(RED, "!"),
+    }
+}
+
+fn skip(file: &DotFile, hint: &str) {
+    println!(
+        "{} {} {}",
+        paint(YELLOW, "~"),
+        file.relative_path.display(),
+        paint(DIM, format!("(skipped: {hint}; use --force to override)"))
+    );
+}
+
+fn report_error(file: &DotFile) {
+    output::error(file.error.as_deref().unwrap_or("unknown error"));
+}
+
+/// Create the dots directory, its ignore file and a git repository.
+pub fn init() -> Result<()> {
+    let (_, dots) = utils::dirs()?;
+
+    if dots.is_dir() {
+        println!("{} {} already exists", paint(YELLOW, "•"), dots.display());
+    } else {
+        fs::create_dir_all(&dots).context(|| format!("cannot create {}", dots.display()))?;
+        println!("{} created {}", paint(GREEN, "✓"), dots.display());
+    }
+
+    let ignore_file = dots.join(ignore::IGNORE_FILE);
     if !ignore_file.exists() {
-        match fs::write(&ignore_file, ignore::TEMPLATE) {
-            Ok(_) => cprintln!("<green>✓</> {} created", ignore::IGNORE_FILE),
-            Err(_) => cprintln!("<red>✗</> cannot create {}", ignore::IGNORE_FILE),
-        }
+        fs::write(&ignore_file, ignore::TEMPLATE)
+            .context(|| format!("cannot create {}", ignore_file.display()))?;
+        println!("{} created {}", paint(GREEN, "✓"), ignore::IGNORE_FILE);
     }
 
-    match Command::new("git")
-        .arg("init")
-        .current_dir(dots_dir)
+    if dots.join(".git").exists() {
+        println!("{} git repository already exists", paint(YELLOW, "•"));
+        return Ok(());
+    }
+
+    let output = match Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(&dots)
         .output()
     {
-        Ok(_) => cprintln!("<green>✓</> git repository initialized"),
-        Err(_) => cprintln!("<red>✗</> git not available"),
-    }
-}
-
-pub fn add(filename: Option<String>) {
-    let dots_dir = utils::get_dots_dir();
-    let filename = filename.expect("missing file");
-
-    let home_dir = dirs_next::home_dir().expect("no HOME");
-
-    let absolute_path = match fs::canonicalize(&filename) {
-        Ok(p) => p,
-        Err(_) => {
-            cprintln!("<red>✗</> file not found");
-            return;
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return Err(msg("git not found: install git or run `git init` yourself"));
         }
+        other => other.context(|| "cannot run git".into())?,
     };
 
-    if !absolute_path.starts_with(&home_dir) {
-        cprintln!("<red>✗</> file must be inside HOME");
-        return;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(msg(format!("git init failed: {}", stderr.trim())));
     }
 
-    let relative = absolute_path.strip_prefix(&home_dir).unwrap();
-    let destination = dots_dir.join(relative);
+    println!("{} git repository initialized", paint(GREEN, "✓"));
+    Ok(())
+}
 
-    if let Some(parent) = destination.parent() {
-        if fs::create_dir_all(parent).is_err() {
-            cprintln!("<red>✗</> cannot create directory structure");
-            return;
+/// Copy files (or whole directories) from HOME into the dots directory.
+pub fn add(paths: &[PathBuf]) -> Result<()> {
+    let (home, dots) = utils::dirs()?;
+    let ignore = Ignore::load(&dots);
+    let mut state = utils::load_state(&home);
+    let mut failed = 0;
+
+    for arg in paths {
+        if let Err(e) = add_one(arg, &home, &dots, &ignore, &mut state) {
+            output::error(e);
+            failed += 1;
         }
     }
 
-    match fs::copy(&absolute_path, &destination) {
-        Ok(_) => {
-            let mut state = utils::load_state();
-            if let Ok(hash) = utils::calculate_sha256(&destination) {
-                state.set(relative, &hash);
+    save_state(&mut state)?;
+    failures(failed)
+}
+
+fn add_one(arg: &Path, home: &Path, dots: &Path, ignore: &Ignore, state: &mut State) -> Result<()> {
+    let (root, rel) = utils::resolve(
+        arg,
+        home,
+        dots,
+        |root, rel| root == Root::Dots || home.join(rel).symlink_metadata().is_ok(),
+        "no such file",
+    )?;
+
+    if root == Root::Dots {
+        return Err(msg(format!(
+            "{}: is inside the dots directory",
+            arg.display()
+        )));
+    }
+    if rel.as_os_str().is_empty() {
+        return Err(msg("refusing to add the whole HOME directory"));
+    }
+    if ignore.is_ignored(&rel) {
+        return Err(msg(format!("{}: matches an ignore pattern", arg.display())));
+    }
+
+    let source = home.join(&rel);
+    let meta = source
+        .symlink_metadata()
+        .context(|| format!("cannot read {}", source.display()))?;
+
+    let mut files = Vec::new();
+    let mut symlinks = Vec::new();
+    if meta.is_symlink() {
+        symlinks.push(rel);
+    } else if meta.is_dir() {
+        if dots.starts_with(&source) {
+            return Err(msg(format!(
+                "{}: contains the dots directory",
+                arg.display()
+            )));
+        }
+        utils::walk(home, &rel, ignore, &mut files, &mut symlinks);
+        files.sort();
+    } else if meta.is_file() {
+        files.push(rel);
+    } else {
+        return Err(msg(format!("{}: not a regular file", arg.display())));
+    }
+
+    for link in &symlinks {
+        output::warn(format!(
+            "{}: skipped, symlinks are not managed",
+            link.display()
+        ));
+    }
+    if files.is_empty() {
+        return Err(msg(format!("{}: nothing to add", arg.display())));
+    }
+
+    for file in files {
+        let destination = dots.join(&file);
+        copy_file(&home.join(&file), &destination)?;
+        let hash = utils::calculate_sha256(&destination)
+            .context(|| format!("cannot read {}", destination.display()))?;
+        state.set(&file, &hash);
+        println!("{} added {}", paint(GREEN, "+"), file.display());
+    }
+    Ok(())
+}
+
+/// Stop managing files: delete them from the dots directory. HOME is never touched.
+pub fn remove(paths: &[PathBuf]) -> Result<()> {
+    let (home, dots) = utils::dirs()?;
+    let managed = utils::managed_files(&dots);
+    let mut state = utils::load_state(&home);
+    let mut failed = 0;
+
+    for arg in paths {
+        let resolved = utils::resolve(
+            arg,
+            &home,
+            &dots,
+            |_, rel| !rel.as_os_str().is_empty() && managed.iter().any(|m| m.starts_with(rel)),
+            "not managed",
+        );
+        let rel = match resolved {
+            Ok((_, rel)) => rel,
+            Err(e) => {
+                output::error(e);
+                failed += 1;
+                continue;
             }
-            save_state(&mut state);
-            cprintln!("<green>✓</> added <dim>{}</>", relative.display());
+        };
+
+        // `managed` only contains regular files found without following symlinks,
+        // so every target is guaranteed to live inside the dots directory.
+        for file in managed.iter().filter(|m| m.starts_with(&rel)) {
+            let target = dots.join(file);
+            if let Err(e) =
+                fs::remove_file(&target).context(|| format!("cannot remove {}", target.display()))
+            {
+                output::error(e);
+                failed += 1;
+                continue;
+            }
+            remove_empty_parents(&target, &dots);
+            state.remove(file);
+            println!("{} removed {}", paint(RED, "-"), file.display());
         }
-        Err(_) => cprintln!("<red>✗</> copy failed"),
     }
+
+    save_state(&mut state)?;
+    failures(failed)
 }
 
-pub fn remove(filename: Option<String>) {
-    let filename = filename.expect("missing file");
-    let dots_dir = utils::normalize(&utils::get_dots_dir());
-    let target = utils::normalize(&dots_dir.join(&filename));
-
-    // never touch anything outside the dots directory
-    let relative = match target.strip_prefix(&dots_dir) {
-        Ok(r) if !r.as_os_str().is_empty() => r.to_path_buf(),
-        _ => {
-            cprintln!("<red>!</> outside the dots directory: {}", filename);
-            return;
-        }
-    };
-
-    // the parent must also resolve inside the dots directory (no symlinked dirs escaping it)
-    let inside = match (
-        target.parent().map(fs::canonicalize),
-        fs::canonicalize(&dots_dir),
-    ) {
-        (Some(Ok(parent)), Ok(dots)) => parent.starts_with(dots),
-        _ => false,
-    };
-
-    if !inside || !utils::managed_files(&dots_dir).contains(&relative) {
-        cprintln!("<red>!</> not managed: {}", filename);
-        return;
-    }
-
-    if fs::remove_file(&target).is_err() {
-        cprintln!("<red>!</> failed to remove {}", filename);
-        return;
-    }
-
-    // clean up empty directories, but only inside the dots directory
-    let mut current = target.parent();
+/// Remove empty directories above `path`, stopping at (and never removing) `root`.
+fn remove_empty_parents(path: &Path, root: &Path) {
+    let mut current = path.parent();
     while let Some(dir) = current {
-        if dir == dots_dir || !dir.starts_with(&dots_dir) {
-            break;
-        }
-        let empty = fs::read_dir(dir)
-            .map(|mut i| i.next().is_none())
-            .unwrap_or(false);
-        if !empty || fs::remove_dir(dir).is_err() {
+        if dir == root || !dir.starts_with(root) || fs::remove_dir(dir).is_err() {
             break;
         }
         current = dir.parent();
     }
-
-    let mut state = utils::load_state();
-    state.remove(&relative);
-    save_state(&mut state);
-
-    cprintln!("<green>→</> removed {}", relative.display());
 }
 
-pub fn list() {
-    let dots_dir = utils::get_dots_dir();
-    for relative in utils::managed_files(&dots_dir) {
-        cprintln!("<cyan>• {}</>", relative.display());
+pub fn list() -> Result<()> {
+    let (_, dots) = utils::dirs()?;
+    for file in utils::managed_files(&dots) {
+        println!("{}", file.display());
     }
+    Ok(())
 }
 
-fn skip(file: &utils::DotFile, hint: &str) {
-    cprintln!(
-        "<yellow>~</> skipped {} <dim>({}, use --force to override)</>",
-        file.relative_path.display(),
-        hint
-    );
-}
+/// Show the status of every managed file.
+pub fn status(exit_code: bool) -> Result<()> {
+    let (home, dots) = utils::dirs()?;
+    let mut state = utils::load_state(&home);
+    let files = utils::scan(&home, &dots, &mut state);
 
-fn save_state(state: &mut State) {
-    if let Err(e) = state.save() {
-        cprintln!("<red>!</> cannot save state: {}", e);
-    }
-}
-
-/// copy dotfiles into HOME (only files that are missing or changed in the repository)
-pub fn apply(force: bool) {
-    let dots_dir = utils::get_dots_dir();
-
-    let home_dir = match home_dir() {
-        Some(p) => p,
-        None => {
-            cprintln!("<red>!</> HOME not found");
-            return;
-        }
-    };
-
-    let mut state = utils::load_state();
-
-    for file in utils::scan_dots(&mut state) {
-        match file.status {
-            FileStatus::MISSING | FileStatus::UPDATED => {}
-            FileStatus::MODIFIED if !force => {
-                skip(&file, "modified in HOME, run sync");
-                continue;
-            }
-            FileStatus::CONFLICT if !force => {
-                skip(&file, "changed on both sides");
-                continue;
-            }
-            FileStatus::MODIFIED | FileStatus::CONFLICT => {}
-            FileStatus::CLEAN | FileStatus::ERROR => continue,
-        }
-
-        let source_path = dots_dir.join(&file.relative_path);
-        let target_path = home_dir.join(&file.relative_path);
-
-        if target_path.exists() {
-            let backup_path = utils::next_backup_path(&target_path);
-
-            match fs::copy(&target_path, &backup_path) {
-                Ok(_) => {
-                    cprintln!("<dim>B</> {}", backup_path.display());
-                }
-                Err(_) => {
-                    cprintln!("<red>!</> {}", file.relative_path.display());
-                    continue;
-                }
-            }
-        }
-
-        if let Some(parent) = target_path.parent()
-            && fs::create_dir_all(parent).is_err()
-        {
-            cprintln!("<red>!</> {}", file.relative_path.display());
-            continue;
-        }
-
-        match fs::copy(&source_path, &target_path) {
-            Ok(_) => {
-                if let Some(hash) = &file.dots_hash {
-                    state.set(&file.relative_path, hash);
-                }
-                cprintln!("<green>→</> {}", file.relative_path.display())
-            }
-            Err(_) => cprintln!("<red>!</> {}", file.relative_path.display()),
-        }
+    if output::stdout_is_tty() {
+        println!(
+            "{} {} missing | {} modified in HOME | {} updated in repo | {} conflict | {} clean | {} error",
+            paint(DIM, "Legend:"),
+            status_symbol(FileStatus::Missing),
+            status_symbol(FileStatus::Modified),
+            status_symbol(FileStatus::Updated),
+            status_symbol(FileStatus::Conflict),
+            status_symbol(FileStatus::Clean),
+            status_symbol(FileStatus::Error),
+        );
     }
 
-    save_state(&mut state);
-    cprintln!("<dim>done</>");
-}
-
-/// copy local changes from HOME back into the dots repository
-pub fn sync(force: bool) {
-    let dots_dir = utils::get_dots_dir();
-
-    let home_dir = match home_dir() {
-        Some(p) => p,
-        None => {
-            cprintln!("<red>!</> HOME not found");
-            return;
-        }
-    };
-
-    let mut state = utils::load_state();
-    let mut synced = 0;
-
-    for file in utils::scan_dots(&mut state) {
-        match file.status {
-            FileStatus::MODIFIED => {}
-            FileStatus::UPDATED if !force => {
-                skip(&file, "updated in the repository, run apply");
-                continue;
-            }
-            FileStatus::CONFLICT if !force => {
-                skip(&file, "changed on both sides");
-                continue;
-            }
-            FileStatus::UPDATED | FileStatus::CONFLICT => {}
-            FileStatus::MISSING | FileStatus::CLEAN | FileStatus::ERROR => continue,
-        }
-
-        let source = home_dir.join(&file.relative_path);
-        let destination = dots_dir.join(&file.relative_path);
-
-        match fs::copy(&source, &destination) {
-            Ok(_) => {
-                if let Some(hash) = &file.home_hash {
-                    state.set(&file.relative_path, hash);
-                }
-                cprintln!("<green>→</> synced {}", file.relative_path.display());
-                synced += 1;
-            }
-            Err(_) => {
-                cprintln!("<red>!</> {}", file.relative_path.display());
-            }
-        }
+    for file in &files {
+        println!(
+            "{} {}",
+            status_symbol(file.status),
+            file.relative_path.display()
+        );
     }
-
-    save_state(&mut state);
-
-    if synced == 0 {
-        cprintln!("<dim>nothing to sync</>");
-    } else {
-        cprintln!("<green>done</>");
-    }
-}
-
-/// restore the most recent backup of a file in HOME.
-/// The current file is backed up first, so running restore again undoes it.
-pub fn restore(filename: Option<String>) {
-    let filename = filename.expect("missing file");
-
-    let home_dir = match home_dir() {
-        Some(p) => p,
-        None => {
-            cprintln!("<red>!</> HOME not found");
-            return;
-        }
-    };
-    let target = utils::normalize(&home_dir.join(&filename));
-
-    let Some((_, latest)) = utils::list_backups(&target).pop() else {
-        cprintln!("<red>!</> no backup found for {}", filename);
-        return;
-    };
-
-    if target.exists() {
-        let backup_path = utils::next_backup_path(&target);
-        if fs::copy(&target, &backup_path).is_err() {
-            cprintln!("<red>!</> cannot back up {}", target.display());
-            return;
-        }
-        cprintln!("<dim>B</> {}", backup_path.display());
-    }
-
-    if fs::copy(&latest, &target).is_err() || fs::remove_file(&latest).is_err() {
-        cprintln!("<red>!</> cannot restore {}", target.display());
-        return;
-    }
-
-    cprintln!("<green>←</> restored {}", target.display());
-}
-
-/// show status of each tracked file
-pub fn status() {
-    cprintln!(
-        "<dim>Legend:</> <cyan>+</> missing | <yellow>M</> modified in HOME | <blue>U</> updated in repo | <magenta>C</> conflict | <green>=</> clean | <red>!</> error"
-    );
-
-    let mut state = utils::load_state();
-
-    for file in utils::scan_dots(&mut state) {
-        let path = file.relative_path.display();
-        match file.status {
-            FileStatus::MISSING => cprintln!("<cyan>+</> {}", path),
-            FileStatus::MODIFIED => cprintln!("<yellow>M</> {}", path),
-            FileStatus::UPDATED => cprintln!("<blue>U</> {}", path),
-            FileStatus::CONFLICT => cprintln!("<magenta>C</> {}", path),
-            FileStatus::CLEAN => cprintln!("<green>=</> {}", path),
-            FileStatus::ERROR => cprintln!("<red>!</> {}", path),
-        }
+    for file in files.iter().filter(|f| f.status == FileStatus::Error) {
+        report_error(file);
     }
 
     // record files found clean, so later changes have a known direction
-    let _ = state.save();
+    save_state(&mut state)?;
+
+    if exit_code && files.iter().any(|f| f.status != FileStatus::Clean) {
+        return Err(Error::Exit(1));
+    }
+    Ok(())
+}
+
+/// Show differences between the dots directory (-) and HOME (+).
+pub fn diff(paths: &[PathBuf]) -> Result<()> {
+    let (home, dots) = utils::dirs()?;
+    let mut state = utils::load_state(&home);
+    let files = select(utils::scan(&home, &dots, &mut state), paths, &home, &dots)?;
+    let mut failed = 0;
+
+    for file in files {
+        let old = dots.join(&file.relative_path);
+        let new = match file.status {
+            FileStatus::Clean => continue,
+            FileStatus::Error => {
+                report_error(&file);
+                failed += 1;
+                continue;
+            }
+            FileStatus::Missing => PathBuf::from("/dev/null"),
+            _ => home.join(&file.relative_path),
+        };
+        if let Err(e) = run_diff(&home, &old, &new) {
+            output::error(e);
+            failed += 1;
+        }
+    }
+
+    failures(failed)
+}
+
+/// Show a unified diff with git (better output), falling back to diff(1).
+/// Runs from HOME so the file labels are short (`dots/.bashrc` vs `.bashrc`).
+fn run_diff(home: &Path, old: &Path, new: &Path) -> Result<()> {
+    let old = old.strip_prefix(home).unwrap_or(old);
+    let new = new.strip_prefix(home).unwrap_or(new);
+    let _ = io::stdout().flush();
+    let color = if output::color_stdout() {
+        "--color=always"
+    } else {
+        "--color=never"
+    };
+
+    let status = match Command::new("git")
+        .args(["--no-pager", "diff", "--no-index", color, "--"])
+        .args([old, new])
+        .current_dir(home)
+        .status()
+    {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Command::new("diff")
+            .arg("-u")
+            .args([old, new])
+            .current_dir(home)
+            .status()
+            .context(|| "cannot run git or diff".into())?,
+        other => other.context(|| "cannot run git".into())?,
+    };
+
+    // both tools exit with 1 when the files differ
+    match status.code() {
+        Some(0 | 1) => Ok(()),
+        _ => Err(msg(format!("diff failed for {}", old.display()))),
+    }
+}
+
+/// Copy dotfiles into HOME: files missing in HOME or updated in the repository.
+pub fn apply(opts: Transfer) -> Result<()> {
+    let (home, dots) = utils::dirs()?;
+    let mut state = utils::load_state(&home);
+    let files = select(
+        utils::scan(&home, &dots, &mut state),
+        opts.paths,
+        &home,
+        &dots,
+    )?;
+    let (mut done, mut failed) = (0, 0);
+
+    for file in files {
+        match file.status {
+            FileStatus::Missing | FileStatus::Updated => {}
+            FileStatus::Modified if !opts.force => {
+                skip(&file, "modified in HOME, run sync");
+                continue;
+            }
+            FileStatus::Conflict if !opts.force => {
+                skip(&file, "changed on both sides, see diff");
+                continue;
+            }
+            FileStatus::Modified | FileStatus::Conflict => {}
+            FileStatus::Clean => continue,
+            FileStatus::Error => {
+                report_error(&file);
+                failed += 1;
+                continue;
+            }
+        }
+
+        let rel = &file.relative_path;
+        if opts.dry_run {
+            println!("{} would apply {}", paint(DIM, "→"), rel.display());
+            done += 1;
+            continue;
+        }
+
+        let target = home.join(rel);
+        let result = (|| {
+            if file.status != FileStatus::Missing {
+                let b = backup(&target)?;
+                println!("{} {}", paint(DIM, "B"), b.display());
+            }
+            copy_file(&dots.join(rel), &target)
+        })();
+
+        match result {
+            Ok(()) => {
+                if let Some(hash) = &file.dots_hash {
+                    state.set(rel, hash);
+                }
+                println!("{} {}", paint(GREEN, "→"), rel.display());
+                done += 1;
+            }
+            Err(e) => {
+                output::error(e);
+                failed += 1;
+            }
+        }
+    }
+
+    if !opts.dry_run {
+        save_state(&mut state)?;
+    }
+    if done == 0 && failed == 0 {
+        println!("{}", paint(DIM, "nothing to apply"));
+    }
+    failures(failed)
+}
+
+/// Copy files changed in HOME back into the dots directory.
+pub fn sync(opts: Transfer) -> Result<()> {
+    let (home, dots) = utils::dirs()?;
+    let mut state = utils::load_state(&home);
+    let files = select(
+        utils::scan(&home, &dots, &mut state),
+        opts.paths,
+        &home,
+        &dots,
+    )?;
+    let (mut done, mut failed) = (0, 0);
+
+    for file in files {
+        match file.status {
+            FileStatus::Modified => {}
+            FileStatus::Updated if !opts.force => {
+                skip(&file, "updated in the repository, run apply");
+                continue;
+            }
+            FileStatus::Conflict if !opts.force => {
+                skip(&file, "changed on both sides, see diff");
+                continue;
+            }
+            FileStatus::Updated | FileStatus::Conflict => {}
+            FileStatus::Missing | FileStatus::Clean => continue,
+            FileStatus::Error => {
+                report_error(&file);
+                failed += 1;
+                continue;
+            }
+        }
+
+        let rel = &file.relative_path;
+        if opts.dry_run {
+            println!("{} would sync {}", paint(DIM, "←"), rel.display());
+            done += 1;
+            continue;
+        }
+
+        match copy_file(&home.join(rel), &dots.join(rel)) {
+            Ok(()) => {
+                if let Some(hash) = &file.home_hash {
+                    state.set(rel, hash);
+                }
+                println!("{} synced {}", paint(GREEN, "←"), rel.display());
+                done += 1;
+            }
+            Err(e) => {
+                output::error(e);
+                failed += 1;
+            }
+        }
+    }
+
+    if !opts.dry_run {
+        save_state(&mut state)?;
+    }
+    if done == 0 && failed == 0 {
+        println!("{}", paint(DIM, "nothing to sync"));
+    }
+    failures(failed)
+}
+
+/// Restore the most recent backup of files in HOME.
+/// The current file is backed up first, so running restore again undoes it.
+pub fn restore(paths: &[PathBuf]) -> Result<()> {
+    let (home, dots) = utils::dirs()?;
+    let mut failed = 0;
+
+    for arg in paths {
+        if let Err(e) = restore_one(arg, &home, &dots) {
+            output::error(e);
+            failed += 1;
+        }
+    }
+    failures(failed)
+}
+
+fn restore_one(arg: &Path, home: &Path, dots: &Path) -> Result<()> {
+    let (_, rel) = utils::resolve(
+        arg,
+        home,
+        dots,
+        |_, rel| !utils::list_backups(&home.join(rel)).is_empty(),
+        "no backup found",
+    )?;
+    let target = home.join(&rel);
+    let Some((_, latest)) = utils::list_backups(&target).pop() else {
+        return Err(msg(format!("{}: no backup found", arg.display())));
+    };
+
+    if target.exists() {
+        let b = backup(&target)?;
+        println!("{} {}", paint(DIM, "B"), b.display());
+    }
+
+    fs::copy(&latest, &target).context(|| format!("cannot restore {}", target.display()))?;
+    fs::remove_file(&latest).context(|| format!("cannot remove {}", latest.display()))?;
+
+    println!("{} restored {}", paint(GREEN, "←"), rel.display());
+    Ok(())
 }
