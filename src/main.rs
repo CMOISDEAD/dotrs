@@ -1,5 +1,6 @@
 mod ignore;
 mod methods;
+mod state;
 mod utils;
 
 use clap::{Parser, ValueEnum};
@@ -23,6 +24,9 @@ struct Args {
     action: Action,
     #[arg(short, long, required = false)]
     file: Option<String>,
+    /// apply/sync: overwrite files even if they changed on the other side
+    #[arg(long)]
+    force: bool,
 }
 
 fn main() {
@@ -30,12 +34,12 @@ fn main() {
 
     match args.action {
         Action::INIT => methods::init(),
-        Action::APPLY => methods::apply(),
+        Action::APPLY => methods::apply(args.force),
         Action::ADD => methods::add(args.file),
         Action::REMOVE => methods::remove(args.file),
         Action::LIST => methods::list(),
         Action::STATUS => methods::status(),
-        Action::SYNC => methods::sync(),
+        Action::SYNC => methods::sync(args.force),
         Action::RESTORE => methods::restore(args.file),
     }
 }

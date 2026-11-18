@@ -4,6 +4,7 @@ use color_print::cprintln;
 
 use crate::{
     ignore,
+    state::State,
     utils::{self, FileStatus},
 };
 
@@ -78,6 +79,11 @@ pub fn add(filename: Option<String>) {
 
     match fs::copy(&absolute_path, &destination) {
         Ok(_) => {
+            let mut state = utils::load_state();
+            if let Ok(hash) = utils::calculate_sha256(&destination) {
+                state.set(relative, &hash);
+            }
+            save_state(&mut state);
             cprintln!("<green>✓</> added <dim>{}</>", relative.display());
         }
         Err(_) => cprintln!("<red>✗</> copy failed"),
@@ -132,6 +138,10 @@ pub fn remove(filename: Option<String>) {
         current = dir.parent();
     }
 
+    let mut state = utils::load_state();
+    state.remove(&relative);
+    save_state(&mut state);
+
     cprintln!("<green>→</> removed {}", relative.display());
 }
 
@@ -142,57 +152,22 @@ pub fn list() {
     }
 }
 
-pub fn apply() {
-    let dots_dir = utils::get_dots_dir();
-
-    let home_dir = match home_dir() {
-        Some(p) => p,
-        None => {
-            cprintln!("<red>!</> HOME not found");
-            return;
-        }
-    };
-
-    for file in utils::scan_dots() {
-        match file.status {
-            FileStatus::MISSING | FileStatus::MODIFIED => {
-                let source_path = dots_dir.join(&file.relative_path);
-                let target_path = home_dir.join(&file.relative_path);
-
-                if target_path.exists() {
-                    let backup_path = utils::next_backup_path(&target_path);
-
-                    match fs::copy(&target_path, &backup_path) {
-                        Ok(_) => {
-                            cprintln!("<dim>B</> {}", backup_path.display());
-                        }
-                        Err(_) => {
-                            cprintln!("<red>!</> {}", file.relative_path.display());
-                            continue;
-                        }
-                    }
-                }
-
-                if let Some(parent) = target_path.parent() {
-                    if fs::create_dir_all(parent).is_err() {
-                        cprintln!("<red>!</> {}", file.relative_path.display());
-                        continue;
-                    }
-                }
-
-                match fs::copy(&source_path, &target_path) {
-                    Ok(_) => cprintln!("<green>→</> {}", file.relative_path.display()),
-                    Err(_) => cprintln!("<red>!</> {}", file.relative_path.display()),
-                }
-            }
-            _ => {}
-        }
-    }
-
-    cprintln!("<dim>done</>");
+fn skip(file: &utils::DotFile, hint: &str) {
+    cprintln!(
+        "<yellow>~</> skipped {} <dim>({}, use --force to override)</>",
+        file.relative_path.display(),
+        hint
+    );
 }
 
-pub fn sync() {
+fn save_state(state: &mut State) {
+    if let Err(e) = state.save() {
+        cprintln!("<red>!</> cannot save state: {}", e);
+    }
+}
+
+/// copy dotfiles into HOME (only files that are missing or changed in the repository)
+pub fn apply(force: bool) {
     let dots_dir = utils::get_dots_dir();
 
     let home_dir = match home_dir() {
@@ -203,26 +178,100 @@ pub fn sync() {
         }
     };
 
-    let files = utils::scan_dots();
-    let mut synced = 0;
+    let mut state = utils::load_state();
 
-    for file in files {
-        if file.status != FileStatus::MODIFIED {
-            continue;
+    for file in utils::scan_dots(&mut state) {
+        match file.status {
+            FileStatus::MISSING | FileStatus::UPDATED => {}
+            FileStatus::MODIFIED if !force => {
+                skip(&file, "modified in HOME, run sync");
+                continue;
+            }
+            FileStatus::CONFLICT if !force => {
+                skip(&file, "changed on both sides");
+                continue;
+            }
+            FileStatus::MODIFIED | FileStatus::CONFLICT => {}
+            FileStatus::CLEAN | FileStatus::ERROR => continue,
         }
 
-        let source = home_dir.join(&file.relative_path);
-        let destination = dots_dir.join(&file.relative_path);
+        let source_path = dots_dir.join(&file.relative_path);
+        let target_path = home_dir.join(&file.relative_path);
 
-        if let Some(parent) = destination.parent()
+        if target_path.exists() {
+            let backup_path = utils::next_backup_path(&target_path);
+
+            match fs::copy(&target_path, &backup_path) {
+                Ok(_) => {
+                    cprintln!("<dim>B</> {}", backup_path.display());
+                }
+                Err(_) => {
+                    cprintln!("<red>!</> {}", file.relative_path.display());
+                    continue;
+                }
+            }
+        }
+
+        if let Some(parent) = target_path.parent()
             && fs::create_dir_all(parent).is_err()
         {
             cprintln!("<red>!</> {}", file.relative_path.display());
             continue;
         }
 
+        match fs::copy(&source_path, &target_path) {
+            Ok(_) => {
+                if let Some(hash) = &file.dots_hash {
+                    state.set(&file.relative_path, hash);
+                }
+                cprintln!("<green>→</> {}", file.relative_path.display())
+            }
+            Err(_) => cprintln!("<red>!</> {}", file.relative_path.display()),
+        }
+    }
+
+    save_state(&mut state);
+    cprintln!("<dim>done</>");
+}
+
+/// copy local changes from HOME back into the dots repository
+pub fn sync(force: bool) {
+    let dots_dir = utils::get_dots_dir();
+
+    let home_dir = match home_dir() {
+        Some(p) => p,
+        None => {
+            cprintln!("<red>!</> HOME not found");
+            return;
+        }
+    };
+
+    let mut state = utils::load_state();
+    let mut synced = 0;
+
+    for file in utils::scan_dots(&mut state) {
+        match file.status {
+            FileStatus::MODIFIED => {}
+            FileStatus::UPDATED if !force => {
+                skip(&file, "updated in the repository, run apply");
+                continue;
+            }
+            FileStatus::CONFLICT if !force => {
+                skip(&file, "changed on both sides");
+                continue;
+            }
+            FileStatus::UPDATED | FileStatus::CONFLICT => {}
+            FileStatus::MISSING | FileStatus::CLEAN | FileStatus::ERROR => continue,
+        }
+
+        let source = home_dir.join(&file.relative_path);
+        let destination = dots_dir.join(&file.relative_path);
+
         match fs::copy(&source, &destination) {
             Ok(_) => {
+                if let Some(hash) = &file.home_hash {
+                    state.set(&file.relative_path, hash);
+                }
                 cprintln!("<green>→</> synced {}", file.relative_path.display());
                 synced += 1;
             }
@@ -231,6 +280,8 @@ pub fn sync() {
             }
         }
     }
+
+    save_state(&mut state);
 
     if synced == 0 {
         cprintln!("<dim>nothing to sync</>");
@@ -278,15 +329,23 @@ pub fn restore(filename: Option<String>) {
 /// show status of each tracked file
 pub fn status() {
     cprintln!(
-        "<dim>Legend:</> <cyan>+</> missing | <yellow>M</> modified | <green>=</> clean | <red>!</> error"
+        "<dim>Legend:</> <cyan>+</> missing | <yellow>M</> modified in HOME | <blue>U</> updated in repo | <magenta>C</> conflict | <green>=</> clean | <red>!</> error"
     );
 
-    for file in utils::scan_dots() {
+    let mut state = utils::load_state();
+
+    for file in utils::scan_dots(&mut state) {
+        let path = file.relative_path.display();
         match file.status {
-            FileStatus::MISSING => cprintln!("<cyan>+</> {}", file.relative_path.display()),
-            FileStatus::MODIFIED => cprintln!("<yellow>M</> {}", file.relative_path.display()),
-            FileStatus::CLEAN => cprintln!("<green>=</> {}", file.relative_path.display()),
-            FileStatus::ERROR => cprintln!("<red>!</> {}", file.relative_path.display()),
+            FileStatus::MISSING => cprintln!("<cyan>+</> {}", path),
+            FileStatus::MODIFIED => cprintln!("<yellow>M</> {}", path),
+            FileStatus::UPDATED => cprintln!("<blue>U</> {}", path),
+            FileStatus::CONFLICT => cprintln!("<magenta>C</> {}", path),
+            FileStatus::CLEAN => cprintln!("<green>=</> {}", path),
+            FileStatus::ERROR => cprintln!("<red>!</> {}", path),
         }
     }
+
+    // record files found clean, so later changes have a known direction
+    let _ = state.save();
 }

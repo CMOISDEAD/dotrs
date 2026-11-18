@@ -7,7 +7,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::ignore::Ignore;
+use crate::{ignore::Ignore, state::State};
 
 /// Files managed in `dots_dir`, as paths relative to it.
 /// Ignored entries and symlinks are skipped (symlinks are never followed).
@@ -73,8 +73,14 @@ pub fn calculate_sha256(path: &Path) -> Result<String> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileStatus {
+    /// not present in HOME
     MISSING,
+    /// changed in HOME since the last sync
     MODIFIED,
+    /// changed in the dots repository since the last sync
+    UPDATED,
+    /// changed on both sides, or no previous sync recorded
+    CONFLICT,
     CLEAN,
     ERROR,
 }
@@ -82,9 +88,13 @@ pub enum FileStatus {
 pub struct DotFile {
     pub relative_path: PathBuf,
     pub status: FileStatus,
+    pub dots_hash: Option<String>,
+    pub home_hash: Option<String>,
 }
 
-pub fn scan_dots() -> Vec<DotFile> {
+/// Compare every managed file against HOME and the last synchronized hash.
+/// Files found identical on both sides are recorded in `state`.
+pub fn scan_dots(state: &mut State) -> Vec<DotFile> {
     let dots_dir = get_dots_dir();
 
     let home_dir = match home_dir() {
@@ -95,32 +105,48 @@ pub fn scan_dots() -> Vec<DotFile> {
     let mut results = Vec::new();
 
     for relative in managed_files(&dots_dir) {
-        let file = dots_dir.join(&relative);
+        let dots_hash = calculate_sha256(&dots_dir.join(&relative)).ok();
         let home_path = home_dir.join(&relative);
 
-        // Case 1: file does not exist in HOME
-        if !home_path.exists() {
-            results.push(DotFile {
-                relative_path: relative,
-                status: FileStatus::MISSING,
-            });
-            continue;
-        }
+        let (status, home_hash) = if !home_path.exists() {
+            (FileStatus::MISSING, None)
+        } else {
+            let home_hash = calculate_sha256(&home_path).ok();
+            let status = match (&dots_hash, &home_hash) {
+                (Some(d), Some(h)) if d == h => {
+                    state.set(&relative, d);
+                    FileStatus::CLEAN
+                }
+                (Some(d), Some(h)) => match state.get(&relative) {
+                    Some(base) if base == h => FileStatus::UPDATED,
+                    Some(base) if base == d => FileStatus::MODIFIED,
+                    _ => FileStatus::CONFLICT,
+                },
+                _ => FileStatus::ERROR,
+            };
+            (status, home_hash)
+        };
 
-        // Case 2: hash comparison
-        let status = match (calculate_sha256(&file), calculate_sha256(&home_path)) {
-            (Ok(a), Ok(b)) if a == b => FileStatus::CLEAN,
-            (Ok(_), Ok(_)) => FileStatus::MODIFIED,
-            _ => FileStatus::ERROR,
+        let status = if dots_hash.is_none() {
+            FileStatus::ERROR
+        } else {
+            status
         };
 
         results.push(DotFile {
             relative_path: relative,
             status,
+            dots_hash,
+            home_hash,
         });
     }
 
     results
+}
+
+pub fn load_state() -> State {
+    let home_dir = dirs_next::home_dir().expect("No Home");
+    State::load(State::default_path(&home_dir))
 }
 
 /// Backups live next to the original as `<name>.bak.<unix-seconds>`.
