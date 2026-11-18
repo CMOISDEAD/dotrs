@@ -5,7 +5,16 @@
 * DONE Implement "remove" action.
 CLOSED: [2025-12-17 Wed 18:19]
 
-* DONE add an ignore files list, and then add a configuration file.
-CLOSED: [2025-12-18 Thu 18:37]
-implement an ignore file list and a configuration file to manage some options mainly dotrs directory path.
+* DONE Add an ignore file list and a way to configure the dots directory.
+CLOSED: [2026-11-17 Tue]
+=.dotrsignore= in the dots directory and the =DOTRS_DIR= environment variable.
 
+* DONE Know which side changed (HOME or repository).
+CLOSED: [2026-11-17 Tue]
+Last synced hashes are stored in =$XDG_STATE_HOME/dotrs/state=.
+
+* DONE Reversible apply: timestamped backups and "restore".
+CLOSED: [2026-11-17 Tue]
+
+* DONE Subcommand CLI, diff, dry-run, exit codes.
+CLOSED: [2026-11-17 Tue]

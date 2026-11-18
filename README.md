@@ -15,113 +15,159 @@ Built for users who want full control over their environment with minimal overhe
 ## Design goals
 
 - Keep dotfile management simple and predictable.
-- Avoid symlinks and hidden magic.
+- Avoid symlinks and hidden magic: dotfiles are plain copies.
 - Make every action explicit and reversible.
 - Follow a clean, UNIX-like workflow.
 
 ## Usage
 
 ```text
-Usage: dotrs [OPTIONS] --action <ACTION>
+Usage: dotrs <COMMAND>
 
-Options:
-  -a, --action <ACTION>  [possible values: init, apply, sync, add, remove, list, status]
-  -f, --file <FILE>
-  -h, --help             Print help
-  -V, --version          Print version
+Commands:
+  init     Create the dots directory, its .dotrsignore and a git repository
+  add      Copy files or directories from HOME into the dots directory
+  remove   Stop managing files (deletes them from the dots directory, never from HOME)
+  list     List managed files
+  status   Show the state of every managed file
+  diff     Show differences between the dots directory (-) and HOME (+)
+  apply    Copy dotfiles into HOME (missing files and files updated in the repository)
+  sync     Copy files changed in HOME back into the dots directory
+  restore  Restore the latest backup of files in HOME (run again to undo)
 ```
 
-- Typical workflow:
-`init → add → status → apply`
+Typical workflow: `init → add → status → diff → apply / sync`
 
-- Initialize dotfiles
+Paths can be given as `~/.config/foo`, as `.config/foo` from any directory,
+or relative to the current directory.
+
+### Initialize
 
 ```sh
-$ dotrs --action init
+$ dotrs init
+✓ created /home/user/dots
+✓ created .dotrsignore
+✓ git repository initialized
 ```
 
-Creates a ~/dots directory and initializes a Git repository inside it.
-
-- Check status
+### Add files
 
 ```sh
-$ dotrs --action status
+$ dotrs add ~/.config/alacritty ~/.bashrc
++ added .config/alacritty/alacritty.toml
++ added .bashrc
 ```
 
-```sh
-Legend: + missing | M modified | = clean | ! error
-= .config/noctalia/templates/pywalfox-colors.json
-= .config/noctalia/templates/zathura-colors
-= .config/niri/config.kdl
-= .config/alacritty/alacritty.toml
-= .config/ghostty/config
-= .config/rmpc/config.ron
-```
+Directories are added recursively. Symlinks are skipped (dotrs never manages
+symlinks), and files matching `.dotrsignore` are left out.
 
-- Add a file
+### Status
+
+dotrs remembers the hash of every file at the last sync, so it knows **which
+side** changed:
 
 ```sh
-$ dotrs --action add --file alacritty.toml
-```
-
-```sh
-~/dots/
-.
-└── .config
-    └── alacritty
-        └── alacritty.toml
-```
-
-- Apply dotfiles
-
-```sh
-$ dotrs --action apply
-```
-
-```sh
-B .config/alacritty/alacritty.toml.bak
-→ .config/alacritty/alacritty.toml
-done
-```
-
-Copies dotfiles into $HOME
-Automatically creates .bak backups for modified files
-
-- Sync local changes back to dotfiles
-
-Use sync when local files have been modified and you want to update the dotfiles repository.
-
-```sh
-$ dotrs --action status
-```
-
-```sh
-Legend: + missing | M modified | = clean | ! error
-= .config/noctalia/templates/pywalfox-colors.json
-= .config/noctalia/templates/zathura-colors
+$ dotrs status
+Legend: + missing | M modified in HOME | U updated in repo | C conflict | = clean | ! error
+= .bashrc
 M .config/niri/config.kdl
-= .config/ghostty/config
-= .config/rmpc/config.ron
+U .config/alacritty/alacritty.toml
+C .config/ghostty/config
++ .config/rmpc/config.ron
 ```
 
-```sh
-$ dotrs --action sync
-```
+| Symbol | Meaning | Fix with |
+|---|---|---|
+| `+` | missing in HOME | `apply` |
+| `M` | changed in HOME | `sync` |
+| `U` | changed in the repository (e.g. after `git pull`) | `apply` |
+| `C` | changed on both sides, or never synced on this machine | `diff`, then `apply --force` or `sync --force` |
+| `=` | clean | |
+| `!` | error (unreadable, not a regular file…) | |
+
+`dotrs status --exit-code` exits with 1 when something is not clean, which is
+handy for scripts and shell prompts. Output is plain text when piped.
+
+### Diff
 
 ```sh
-→ synced .config/niri/config.kdl
-done
+$ dotrs diff .config/niri
 ```
 
-```sh
-$ dotrs --action status
-```
+Uses `git diff --no-index` (or `diff -u` when git is missing). Lines prefixed
+with `-` are in the repository, `+` are in HOME.
+
+### Apply
 
 ```sh
-Legend: + missing | M modified | = clean | ! error
-= .config/noctalia/templates/pywalfox-colors.json
-= .config/noctalia/templates/zathura-colors
-= .config/niri/config.kdl
-= .config/ghostty/config
-= .config/rmpc/config.ron
+$ dotrs apply
+B /home/user/.config/alacritty/alacritty.toml.bak.1763380000
+→ .config/alacritty/alacritty.toml
+→ .config/rmpc/config.ron
+~ .config/niri/config.kdl (skipped: modified in HOME, run sync; use --force to override)
 ```
+
+- Only `+` and `U` files are written; local changes are never overwritten
+  unless you pass `--force`.
+- Every overwritten file is backed up first as `<file>.bak.<timestamp>`.
+  Backups are never overwritten.
+- `--dry-run` (`-n`) shows what would happen; paths limit it to some files.
+
+### Sync
+
+```sh
+$ dotrs sync
+← synced .config/niri/config.kdl
+```
+
+Copies `M` files from HOME into the repository. Commit them with git as usual.
+
+### Restore
+
+```sh
+$ dotrs restore ~/.config/alacritty/alacritty.toml
+← restored .config/alacritty/alacritty.toml
+```
+
+Restores the most recent backup. The current file is backed up first, so
+running `restore` again undoes it.
+
+### Remove
+
+```sh
+$ dotrs remove .config/alacritty
+- removed .config/alacritty/alacritty.toml
+```
+
+Deletes the file from the dots directory only. HOME is never touched.
+
+## Configuration
+
+| | |
+|---|---|
+| `DOTRS_DIR` | dots directory (default `~/dots`; relative paths are taken from HOME) |
+| `~/dots/.dotrsignore` | files that are never applied (see below) |
+| `$XDG_STATE_HOME/dotrs/state` | last synced hashes (default `~/.local/state/dotrs/state`), per machine, `sha256sum` format |
+| `NO_COLOR` | disable colors |
+
+### .dotrsignore
+
+One pattern per line, lines starting with `#` are comments:
+
+```text
+# any file named *.swp, at any depth
+*.swp
+# a leading '/' anchors to the root of the dots directory
+/scripts
+# patterns containing '/' are always anchored
+.config/secret/
+```
+
+`*` and `?` are supported. `.git`, `/.github`, `/.gitignore`,
+`/.dotrsignore`, `/README*` and `/LICENSE*` are always ignored, so the
+repository can hold its own README and license.
+
+## Exit status
+
+`0` on success, `1` if anything failed (each error is printed to stderr with
+its cause) or, with `status --exit-code`, if any file is not clean.
