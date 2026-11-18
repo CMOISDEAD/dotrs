@@ -3,37 +3,53 @@ use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File},
     io::{BufReader, Read, Result},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
-pub fn recursive_list(path: &PathBuf) -> Vec<PathBuf> {
+use crate::ignore::Ignore;
+
+/// Files managed in `dots_dir`, as paths relative to it.
+/// Ignored entries and symlinks are skipped (symlinks are never followed).
+pub fn managed_files(dots_dir: &Path) -> Vec<PathBuf> {
+    let ignore = Ignore::load(dots_dir);
     let mut files = Vec::new();
+    walk(dots_dir, Path::new(""), &ignore, &mut files);
+    files.sort();
+    files
+}
 
-    if !path.is_dir() {
-        return files;
-    }
+fn walk(root: &Path, relative: &Path, ignore: &Ignore, files: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(root.join(relative)) else {
+        return;
+    };
 
-    if let Ok(entries) = fs::read_dir(path) {
-        for entry in entries {
-            if let Ok(entry) = entry {
-                let entry_path = entry.path();
-
-                if let Some(name) = entry.file_name().to_str() {
-                    if name == ".git" {
-                        continue;
-                    }
-                }
-
-                if entry_path.is_dir() {
-                    files.extend(recursive_list(&entry_path));
-                } else {
-                    files.push(entry_path);
-                }
-            }
+    for entry in entries.flatten() {
+        let rel = relative.join(entry.file_name());
+        if ignore.is_ignored(&rel) {
+            continue;
+        }
+        match entry.file_type() {
+            Ok(t) if t.is_dir() => walk(root, &rel, ignore, files),
+            Ok(t) if t.is_file() => files.push(rel),
+            _ => {}
         }
     }
+}
 
-    files
+/// Lexically normalize a path: drop `.` and resolve `..` without touching the filesystem.
+pub fn normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 pub fn calculate_sha256(path: &Path) -> Result<String> {
@@ -41,7 +57,7 @@ pub fn calculate_sha256(path: &Path) -> Result<String> {
     let mut reader = BufReader::new(file);
 
     let mut hasher = Sha256::new();
-    let mut buffer = [0u8; 4096];
+    let mut buffer = [0u8; 8192];
 
     loop {
         let bytes_read = reader.read(&mut buffer)?;
@@ -78,12 +94,8 @@ pub fn scan_dots() -> Vec<DotFile> {
 
     let mut results = Vec::new();
 
-    for file in recursive_list(&dots_dir) {
-        let relative = match file.strip_prefix(&dots_dir) {
-            Ok(p) => p.to_path_buf(),
-            Err(_) => continue,
-        };
-
+    for relative in managed_files(&dots_dir) {
+        let file = dots_dir.join(&relative);
         let home_path = home_dir.join(&relative);
 
         // Case 1: file does not exist in HOME
@@ -96,32 +108,10 @@ pub fn scan_dots() -> Vec<DotFile> {
         }
 
         // Case 2: hash comparison
-        let dots_hash = match calculate_sha256(&file) {
-            Ok(h) => h,
-            Err(_) => {
-                results.push(DotFile {
-                    relative_path: relative,
-                    status: FileStatus::ERROR,
-                });
-                continue;
-            }
-        };
-
-        let home_hash = match calculate_sha256(&home_path) {
-            Ok(h) => h,
-            Err(_) => {
-                results.push(DotFile {
-                    relative_path: relative,
-                    status: FileStatus::ERROR,
-                });
-                continue;
-            }
-        };
-
-        let status = if dots_hash == home_hash {
-            FileStatus::CLEAN
-        } else {
-            FileStatus::MODIFIED
+        let status = match (calculate_sha256(&file), calculate_sha256(&home_path)) {
+            (Ok(a), Ok(b)) if a == b => FileStatus::CLEAN,
+            (Ok(_), Ok(_)) => FileStatus::MODIFIED,
+            _ => FileStatus::ERROR,
         };
 
         results.push(DotFile {
@@ -133,14 +123,51 @@ pub fn scan_dots() -> Vec<DotFile> {
     results
 }
 
-pub fn with_bak(path: &Path) -> PathBuf {
+/// Backups live next to the original as `<name>.bak.<unix-seconds>`.
+fn backup_prefix(path: &Path) -> Option<String> {
+    Some(format!("{}.bak.", path.file_name()?.to_string_lossy()))
+}
+
+/// Existing backups of `path`, sorted oldest first.
+pub fn list_backups(path: &Path) -> Vec<(u64, PathBuf)> {
+    let (Some(parent), Some(prefix)) = (path.parent(), backup_prefix(path)) else {
+        return Vec::new();
+    };
+    let Ok(entries) = fs::read_dir(parent) else {
+        return Vec::new();
+    };
+
+    let mut backups: Vec<(u64, PathBuf)> = entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let stamp = name.strip_prefix(&prefix)?.parse().ok()?;
+            Some((stamp, e.path()))
+        })
+        .collect();
+    backups.sort();
+    backups
+}
+
+/// A fresh backup path for `path`. Never reuses an existing backup and is always
+/// newer than any existing one, so the latest backup is the one with the highest stamp.
+pub fn next_backup_path(path: &Path) -> PathBuf {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let latest = list_backups(path).last().map(|(s, _)| *s);
+    let stamp = match latest {
+        Some(l) if l >= now => l + 1,
+        _ => now,
+    };
+
     let mut backup = path.as_os_str().to_owned();
-    backup.push(".bak");
+    backup.push(format!(".bak.{stamp}"));
     PathBuf::from(backup)
 }
 
-
-pub fn get_dots_dir () -> PathBuf {
+pub fn get_dots_dir() -> PathBuf {
     let home_dir = dirs_next::home_dir().expect("No Home");
 
     home_dir.join("dots")

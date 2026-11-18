@@ -1,3 +1,4 @@
+mod ignore;
 mod methods;
 mod utils;
 
@@ -12,6 +13,7 @@ enum Action {
     REMOVE,
     LIST,
     STATUS,
+    RESTORE,
 }
 
 #[derive(Parser, Debug)]
@@ -34,5 +36,6 @@ fn main() {
         Action::LIST => methods::list(),
         Action::STATUS => methods::status(),
         Action::SYNC => methods::sync(),
+        Action::RESTORE => methods::restore(args.file),
     }
 }

@@ -1,8 +1,11 @@
-use std::{env::home_dir, fs, io::ErrorKind, path::Path, process::Command};
+use std::{env::home_dir, fs, io::ErrorKind, process::Command};
 
 use color_print::cprintln;
 
-use crate::utils::{self, FileStatus};
+use crate::{
+    ignore,
+    utils::{self, FileStatus},
+};
 
 pub fn init() {
     let dots_dir = utils::get_dots_dir();
@@ -24,6 +27,14 @@ pub fn init() {
                 return;
             }
         },
+    }
+
+    let ignore_file = dots_dir.join(ignore::IGNORE_FILE);
+    if !ignore_file.exists() {
+        match fs::write(&ignore_file, ignore::TEMPLATE) {
+            Ok(_) => cprintln!("<green>✓</> {} created", ignore::IGNORE_FILE),
+            Err(_) => cprintln!("<red>✗</> cannot create {}", ignore::IGNORE_FILE),
+        }
     }
 
     match Command::new("git")
@@ -74,12 +85,29 @@ pub fn add(filename: Option<String>) {
 }
 
 pub fn remove(filename: Option<String>) {
-    let filename = filename.expect("file not managed");
-    let relative = Path::new(&filename);
-    let dots_dir = utils::get_dots_dir();
-    let target = dots_dir.join(relative);
+    let filename = filename.expect("missing file");
+    let dots_dir = utils::normalize(&utils::get_dots_dir());
+    let target = utils::normalize(&dots_dir.join(&filename));
 
-    if !target.exists() {
+    // never touch anything outside the dots directory
+    let relative = match target.strip_prefix(&dots_dir) {
+        Ok(r) if !r.as_os_str().is_empty() => r.to_path_buf(),
+        _ => {
+            cprintln!("<red>!</> outside the dots directory: {}", filename);
+            return;
+        }
+    };
+
+    // the parent must also resolve inside the dots directory (no symlinked dirs escaping it)
+    let inside = match (
+        target.parent().map(fs::canonicalize),
+        fs::canonicalize(&dots_dir),
+    ) {
+        (Some(Ok(parent)), Ok(dots)) => parent.starts_with(dots),
+        _ => false,
+    };
+
+    if !inside || !utils::managed_files(&dots_dir).contains(&relative) {
         cprintln!("<red>!</> not managed: {}", filename);
         return;
     }
@@ -89,36 +117,28 @@ pub fn remove(filename: Option<String>) {
         return;
     }
 
+    // clean up empty directories, but only inside the dots directory
     let mut current = target.parent();
-
     while let Some(dir) = current {
-        if dir == dots_dir {
+        if dir == dots_dir || !dir.starts_with(&dots_dir) {
             break;
         }
-
-        if fs::read_dir(dir)
+        let empty = fs::read_dir(dir)
             .map(|mut i| i.next().is_none())
-            .unwrap_or(false)
-        {
-            let _ = fs::remove_dir(dir);
-        } else {
+            .unwrap_or(false);
+        if !empty || fs::remove_dir(dir).is_err() {
             break;
         }
-
         current = dir.parent();
     }
 
-    cprintln!("<green>→</> removed {}", filename);
+    cprintln!("<green>→</> removed {}", relative.display());
 }
 
 pub fn list() {
     let dots_dir = utils::get_dots_dir();
-    let files = utils::recursive_list(&dots_dir);
-
-    for file in files {
-        if let Ok(relative) = file.strip_prefix(&dots_dir) {
-            cprintln!("<cyan>• {}</>", relative.to_string_lossy());
-        }
+    for relative in utils::managed_files(&dots_dir) {
+        cprintln!("<cyan>• {}</>", relative.display());
     }
 }
 
@@ -140,7 +160,7 @@ pub fn apply() {
                 let target_path = home_dir.join(&file.relative_path);
 
                 if target_path.exists() {
-                    let backup_path = utils::with_bak(&target_path);
+                    let backup_path = utils::next_backup_path(&target_path);
 
                     match fs::copy(&target_path, &backup_path) {
                         Ok(_) => {
@@ -219,6 +239,41 @@ pub fn sync() {
     }
 }
 
+/// restore the most recent backup of a file in HOME.
+/// The current file is backed up first, so running restore again undoes it.
+pub fn restore(filename: Option<String>) {
+    let filename = filename.expect("missing file");
+
+    let home_dir = match home_dir() {
+        Some(p) => p,
+        None => {
+            cprintln!("<red>!</> HOME not found");
+            return;
+        }
+    };
+    let target = utils::normalize(&home_dir.join(&filename));
+
+    let Some((_, latest)) = utils::list_backups(&target).pop() else {
+        cprintln!("<red>!</> no backup found for {}", filename);
+        return;
+    };
+
+    if target.exists() {
+        let backup_path = utils::next_backup_path(&target);
+        if fs::copy(&target, &backup_path).is_err() {
+            cprintln!("<red>!</> cannot back up {}", target.display());
+            return;
+        }
+        cprintln!("<dim>B</> {}", backup_path.display());
+    }
+
+    if fs::copy(&latest, &target).is_err() || fs::remove_file(&latest).is_err() {
+        cprintln!("<red>!</> cannot restore {}", target.display());
+        return;
+    }
+
+    cprintln!("<green>←</> restored {}", target.display());
+}
 
 /// show status of each tracked file
 pub fn status() {
