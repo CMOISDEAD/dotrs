@@ -19,6 +19,14 @@ Built for users who want full control over their environment with minimal overhe
 - Make every action explicit and reversible.
 - Follow a clean, UNIX-like workflow.
 
+## Installation
+
+```sh
+$ cargo install --git https://github.com/CMOISDEAD/dotrs
+```
+
+Requires `git` for `init` and `diff` (`diff` falls back to `diff -u`).
+
 ## Usage
 
 ```text
@@ -171,3 +179,17 @@ repository can hold its own README and license.
 
 `0` on success, `1` if anything failed (each error is printed to stderr with
 its cause) or, with `status --exit-code`, if any file is not clean.
+
+## Upgrading from 0.1
+
+- The CLI uses subcommands: `dotrs --action add --file x` is now `dotrs add x`.
+- 0.1 kept no record of past syncs, so after upgrading every file that differs
+  between HOME and the repository shows up as `C`. Check each one with
+  `dotrs diff` and settle it with `dotrs apply --force <file>` or
+  `dotrs sync --force <file>`. Identical files are recorded automatically.
+- Repository files such as `README.md` or `LICENSE` are no longer copied into
+  HOME.
+- Old `<file>.bak` backups are left untouched; new backups are
+  `<file>.bak.<timestamp>`.
+- A managed file that is a symlink in HOME is reported as `!`; dotrs no longer
+  follows it.
