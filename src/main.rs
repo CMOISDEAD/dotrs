@@ -1,15 +1,12 @@
-mod error;
-mod ignore;
-mod methods;
-mod output;
-mod state;
-mod utils;
-
 use std::{path::PathBuf, process::ExitCode};
 
 use clap::{Args, Parser, Subcommand};
 
-use crate::{error::Error, methods::Transfer};
+use dotrs::{
+    Context, Error,
+    commands::{self, Transfer},
+    output,
+};
 
 /// Minimalist dotfiles manager: plain copies, no symlinks, no magic.
 #[derive(Parser, Debug)]
@@ -79,17 +76,7 @@ impl TransferArgs {
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    let result = match &cli.command {
-        Cmd::Init => methods::init(),
-        Cmd::Add { paths } => methods::add(paths),
-        Cmd::Remove { paths } => methods::remove(paths),
-        Cmd::List => methods::list(),
-        Cmd::Status { exit_code } => methods::status(*exit_code),
-        Cmd::Diff { paths } => methods::diff(paths),
-        Cmd::Apply(args) => methods::apply(args.transfer()),
-        Cmd::Sync(args) => methods::sync(args.transfer()),
-        Cmd::Restore { paths } => methods::restore(paths),
-    };
+    let result = Context::from_env().and_then(|ctx| run(&ctx, &cli.command));
 
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -100,5 +87,19 @@ fn main() -> ExitCode {
             output::error(e);
             ExitCode::FAILURE
         }
+    }
+}
+
+fn run(ctx: &Context, command: &Cmd) -> dotrs::Result<()> {
+    match command {
+        Cmd::Init => commands::init(ctx),
+        Cmd::Add { paths } => commands::add(ctx, paths),
+        Cmd::Remove { paths } => commands::remove(ctx, paths),
+        Cmd::List => commands::list(ctx),
+        Cmd::Status { exit_code } => commands::status(ctx, *exit_code),
+        Cmd::Diff { paths } => commands::diff(ctx, paths),
+        Cmd::Apply(args) => commands::apply(ctx, args.transfer()),
+        Cmd::Sync(args) => commands::sync(ctx, args.transfer()),
+        Cmd::Restore { paths } => commands::restore(ctx, paths),
     }
 }

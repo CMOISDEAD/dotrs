@@ -6,11 +6,14 @@ use std::{
 };
 
 use crate::{
+    backup::{list_backups, next_backup_path},
+    context::Context,
     error::{Error, IoContext, Result, msg},
     ignore::{self, Ignore},
     output::{self, BLUE, CYAN, DIM, GREEN, MAGENTA, RED, YELLOW, paint},
+    paths::{self, Root},
+    scan::{self, DotFile, FileStatus},
     state::State,
-    utils::{self, DotFile, FileStatus, Root},
 };
 
 /// Options shared by `apply` and `sync`.
@@ -43,29 +46,23 @@ fn copy_file(from: &Path, to: &Path) -> Result<()> {
 
 /// Copy `path` to a new timestamped backup and return the backup path.
 fn backup(path: &Path) -> Result<PathBuf> {
-    let backup_path = utils::next_backup_path(path);
+    let backup_path = next_backup_path(path);
     fs::copy(path, &backup_path).context(|| format!("cannot back up {}", path.display()))?;
     Ok(backup_path)
 }
 
 /// Resolve command line paths to managed paths (files or directories) and keep
 /// only the scanned files under them. No paths means every file.
-fn select(
-    files: Vec<DotFile>,
-    paths: &[PathBuf],
-    home: &Path,
-    dots: &Path,
-) -> Result<Vec<DotFile>> {
+fn select(ctx: &Context, files: Vec<DotFile>, paths: &[PathBuf]) -> Result<Vec<DotFile>> {
     if paths.is_empty() {
         return Ok(files);
     }
 
     let mut filters = Vec::new();
     for arg in paths {
-        let (_, rel) = utils::resolve(
+        let (_, rel) = paths::resolve(
+            ctx,
             arg,
-            home,
-            dots,
             |_, rel| files.iter().any(|f| f.relative_path.starts_with(rel)),
             "not managed",
         )?;
@@ -103,13 +100,13 @@ fn report_error(file: &DotFile) {
 }
 
 /// Create the dots directory, its ignore file and a git repository.
-pub fn init() -> Result<()> {
-    let (_, dots) = utils::dirs()?;
+pub fn init(ctx: &Context) -> Result<()> {
+    let dots = &ctx.dots;
 
     if dots.is_dir() {
         println!("{} {} already exists", paint(YELLOW, "•"), dots.display());
     } else {
-        fs::create_dir_all(&dots).context(|| format!("cannot create {}", dots.display()))?;
+        fs::create_dir_all(dots).context(|| format!("cannot create {}", dots.display()))?;
         println!("{} created {}", paint(GREEN, "✓"), dots.display());
     }
 
@@ -127,7 +124,7 @@ pub fn init() -> Result<()> {
 
     let output = match Command::new("git")
         .args(["init", "--quiet"])
-        .current_dir(&dots)
+        .current_dir(dots)
         .output()
     {
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -146,14 +143,14 @@ pub fn init() -> Result<()> {
 }
 
 /// Copy files (or whole directories) from HOME into the dots directory.
-pub fn add(paths: &[PathBuf]) -> Result<()> {
-    let (home, dots) = utils::dirs()?;
-    let ignore = Ignore::load(&dots);
-    let mut state = utils::load_state(&home);
+pub fn add(ctx: &Context, paths: &[PathBuf]) -> Result<()> {
+    let dots = &ctx.dots;
+    let ignore = Ignore::load(dots);
+    let mut state = ctx.load_state();
     let mut failed = 0;
 
     for arg in paths {
-        if let Err(e) = add_one(arg, &home, &dots, &ignore, &mut state) {
+        if let Err(e) = add_one(ctx, arg, &ignore, &mut state) {
             output::error(e);
             failed += 1;
         }
@@ -163,11 +160,11 @@ pub fn add(paths: &[PathBuf]) -> Result<()> {
     failures(failed)
 }
 
-fn add_one(arg: &Path, home: &Path, dots: &Path, ignore: &Ignore, state: &mut State) -> Result<()> {
-    let (root, rel) = utils::resolve(
+fn add_one(ctx: &Context, arg: &Path, ignore: &Ignore, state: &mut State) -> Result<()> {
+    let Context { home, dots, .. } = ctx;
+    let (root, rel) = paths::resolve(
+        ctx,
         arg,
-        home,
-        dots,
         |root, rel| root == Root::Dots || home.join(rel).symlink_metadata().is_ok(),
         "no such file",
     )?;
@@ -201,7 +198,7 @@ fn add_one(arg: &Path, home: &Path, dots: &Path, ignore: &Ignore, state: &mut St
                 arg.display()
             )));
         }
-        utils::walk(home, &rel, ignore, &mut files, &mut symlinks);
+        scan::walk(home, &rel, ignore, &mut files, &mut symlinks);
         files.sort();
     } else if meta.is_file() {
         files.push(rel);
@@ -222,7 +219,7 @@ fn add_one(arg: &Path, home: &Path, dots: &Path, ignore: &Ignore, state: &mut St
     for file in files {
         let destination = dots.join(&file);
         copy_file(&home.join(&file), &destination)?;
-        let hash = utils::calculate_sha256(&destination)
+        let hash = scan::calculate_sha256(&destination)
             .context(|| format!("cannot read {}", destination.display()))?;
         state.set(&file, &hash);
         println!("{} added {}", paint(GREEN, "+"), file.display());
@@ -231,17 +228,16 @@ fn add_one(arg: &Path, home: &Path, dots: &Path, ignore: &Ignore, state: &mut St
 }
 
 /// Stop managing files: delete them from the dots directory. HOME is never touched.
-pub fn remove(paths: &[PathBuf]) -> Result<()> {
-    let (home, dots) = utils::dirs()?;
-    let managed = utils::managed_files(&dots);
-    let mut state = utils::load_state(&home);
+pub fn remove(ctx: &Context, paths: &[PathBuf]) -> Result<()> {
+    let dots = &ctx.dots;
+    let managed = scan::managed_files(dots);
+    let mut state = ctx.load_state();
     let mut failed = 0;
 
     for arg in paths {
-        let resolved = utils::resolve(
+        let resolved = paths::resolve(
+            ctx,
             arg,
-            &home,
-            &dots,
             |_, rel| !rel.as_os_str().is_empty() && managed.iter().any(|m| m.starts_with(rel)),
             "not managed",
         );
@@ -265,7 +261,7 @@ pub fn remove(paths: &[PathBuf]) -> Result<()> {
                 failed += 1;
                 continue;
             }
-            remove_empty_parents(&target, &dots);
+            remove_empty_parents(&target, dots);
             state.remove(file);
             println!("{} removed {}", paint(RED, "-"), file.display());
         }
@@ -286,19 +282,18 @@ fn remove_empty_parents(path: &Path, root: &Path) {
     }
 }
 
-pub fn list() -> Result<()> {
-    let (_, dots) = utils::dirs()?;
-    for file in utils::managed_files(&dots) {
+pub fn list(ctx: &Context) -> Result<()> {
+    let dots = &ctx.dots;
+    for file in scan::managed_files(dots) {
         println!("{}", file.display());
     }
     Ok(())
 }
 
 /// Show the status of every managed file.
-pub fn status(exit_code: bool) -> Result<()> {
-    let (home, dots) = utils::dirs()?;
-    let mut state = utils::load_state(&home);
-    let files = utils::scan(&home, &dots, &mut state);
+pub fn status(ctx: &Context, exit_code: bool) -> Result<()> {
+    let mut state = ctx.load_state();
+    let files = scan::scan(ctx, &mut state);
 
     if output::stdout_is_tty() {
         println!(
@@ -334,10 +329,10 @@ pub fn status(exit_code: bool) -> Result<()> {
 }
 
 /// Show differences between the dots directory (-) and HOME (+).
-pub fn diff(paths: &[PathBuf]) -> Result<()> {
-    let (home, dots) = utils::dirs()?;
-    let mut state = utils::load_state(&home);
-    let files = select(utils::scan(&home, &dots, &mut state), paths, &home, &dots)?;
+pub fn diff(ctx: &Context, paths: &[PathBuf]) -> Result<()> {
+    let Context { home, dots, .. } = ctx;
+    let mut state = ctx.load_state();
+    let files = select(ctx, scan::scan(ctx, &mut state), paths)?;
     let mut failed = 0;
 
     for file in files {
@@ -352,7 +347,7 @@ pub fn diff(paths: &[PathBuf]) -> Result<()> {
             FileStatus::Missing => PathBuf::from("/dev/null"),
             _ => home.join(&file.relative_path),
         };
-        if let Err(e) = run_diff(&home, &old, &new) {
+        if let Err(e) = run_diff(home, &old, &new) {
             output::error(e);
             failed += 1;
         }
@@ -396,15 +391,10 @@ fn run_diff(home: &Path, old: &Path, new: &Path) -> Result<()> {
 }
 
 /// Copy dotfiles into HOME: files missing in HOME or updated in the repository.
-pub fn apply(opts: Transfer) -> Result<()> {
-    let (home, dots) = utils::dirs()?;
-    let mut state = utils::load_state(&home);
-    let files = select(
-        utils::scan(&home, &dots, &mut state),
-        opts.paths,
-        &home,
-        &dots,
-    )?;
+pub fn apply(ctx: &Context, opts: Transfer) -> Result<()> {
+    let Context { home, dots, .. } = ctx;
+    let mut state = ctx.load_state();
+    let files = select(ctx, scan::scan(ctx, &mut state), opts.paths)?;
     let (mut done, mut failed) = (0, 0);
 
     for file in files {
@@ -468,15 +458,10 @@ pub fn apply(opts: Transfer) -> Result<()> {
 }
 
 /// Copy files changed in HOME back into the dots directory.
-pub fn sync(opts: Transfer) -> Result<()> {
-    let (home, dots) = utils::dirs()?;
-    let mut state = utils::load_state(&home);
-    let files = select(
-        utils::scan(&home, &dots, &mut state),
-        opts.paths,
-        &home,
-        &dots,
-    )?;
+pub fn sync(ctx: &Context, opts: Transfer) -> Result<()> {
+    let Context { home, dots, .. } = ctx;
+    let mut state = ctx.load_state();
+    let files = select(ctx, scan::scan(ctx, &mut state), opts.paths)?;
     let (mut done, mut failed) = (0, 0);
 
     for file in files {
@@ -532,12 +517,11 @@ pub fn sync(opts: Transfer) -> Result<()> {
 
 /// Restore the most recent backup of files in HOME.
 /// The current file is backed up first, so running restore again undoes it.
-pub fn restore(paths: &[PathBuf]) -> Result<()> {
-    let (home, dots) = utils::dirs()?;
+pub fn restore(ctx: &Context, paths: &[PathBuf]) -> Result<()> {
     let mut failed = 0;
 
     for arg in paths {
-        if let Err(e) = restore_one(arg, &home, &dots) {
+        if let Err(e) = restore_one(ctx, arg) {
             output::error(e);
             failed += 1;
         }
@@ -545,16 +529,16 @@ pub fn restore(paths: &[PathBuf]) -> Result<()> {
     failures(failed)
 }
 
-fn restore_one(arg: &Path, home: &Path, dots: &Path) -> Result<()> {
-    let (_, rel) = utils::resolve(
+fn restore_one(ctx: &Context, arg: &Path) -> Result<()> {
+    let home = &ctx.home;
+    let (_, rel) = paths::resolve(
+        ctx,
         arg,
-        home,
-        dots,
-        |_, rel| !utils::list_backups(&home.join(rel)).is_empty(),
+        |_, rel| !list_backups(&home.join(rel)).is_empty(),
         "no backup found",
     )?;
     let target = home.join(&rel);
-    let Some((_, latest)) = utils::list_backups(&target).pop() else {
+    let Some((_, latest)) = list_backups(&target).pop() else {
         return Err(msg(format!("{}: no backup found", arg.display())));
     };
 

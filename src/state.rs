@@ -5,7 +5,7 @@
 
 use std::{
     collections::BTreeMap,
-    env, fs, io,
+    fs, io,
     path::{Path, PathBuf},
 };
 
@@ -16,14 +16,6 @@ pub struct State {
 }
 
 impl State {
-    pub fn default_path(home: &Path) -> PathBuf {
-        let base = env::var_os("XDG_STATE_HOME")
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute())
-            .unwrap_or_else(|| home.join(".local/state"));
-        base.join("dotrs").join("state")
-    }
-
     /// Load the state file; a missing or unreadable file yields an empty state.
     pub fn load(path: PathBuf) -> State {
         let content = fs::read_to_string(&path).unwrap_or_default();
